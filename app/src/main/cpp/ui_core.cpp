@@ -81,8 +81,6 @@ static void apply_theme() {
     c[ImGuiCol_SliderGrab] = accent;
     c[ImGuiCol_SliderGrabActive] = ImVec4(0.35f, 0.65f, 1.f, 1.f);
     c[ImGuiCol_Separator] = ImVec4(0.22f, 0.30f, 0.42f, 0.5f);
-    c[ImGuiCol_ProgressBar] = accent;
-    c[ImGuiCol_ProgressBarBg] = ImVec4(0.12f, 0.14f, 0.20f, 1.f);
 }
 
 static void refresh_process_list() {
