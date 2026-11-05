@@ -9,6 +9,8 @@ struct ProcCandidate {
 };
 
 void proc_format_cmdline(pid_t pid, char *out, size_t outCap);
+/** Short comm fallback when cmdline empty (static buffer, not thread-safe). */
+const char *proc_comm_fallback(pid_t pid);
 size_t proc_list_all(ProcCandidate *out, size_t maxOut);
 /** Count of numeric entries under /proc (approx live PIDs). */
 size_t proc_list_scan_total();

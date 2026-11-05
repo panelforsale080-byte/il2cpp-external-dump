@@ -22,9 +22,9 @@ static std::string read_cmdline(pid_t pid) {
     std::ifstream f("/proc/" + std::to_string(pid) + "/cmdline", std::ios::binary);
     if (!f) return {};
     std::string all((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-    for (char &c : all)
-        if (c == '\0') c = ' ';
-    while (!all.empty() && all.back() == ' ') all.pop_back();
+    if (all.empty()) return {};
+    const size_t end = all.find('\0');
+    if (end != std::string::npos) all.resize(end);
     return all;
 }
 
@@ -66,6 +66,15 @@ static void sanitize_label(char *out, size_t outCap) {
         const unsigned char c = static_cast<unsigned char>(out[i]);
         if (c < 0x20 || c == 0x7f) out[i] = ' ';
     }
+}
+
+const char *proc_comm_fallback(pid_t pid) {
+    static char buf[128];
+    std::string c = read_comm(pid);
+    if (c.empty()) return "unknown";
+    std::snprintf(buf, sizeof(buf), "%s", c.c_str());
+    sanitize_label(buf, sizeof(buf));
+    return buf;
 }
 
 void proc_format_cmdline(pid_t pid, char *out, size_t outCap) {

@@ -7,6 +7,7 @@ public final class NativeBridge {
 
     public static native void nativeInit();
     public static native void nativeSetContext(Object context);
+    public static native void nativeSetSdcardDir(String absolutePath);
     public static native void nativeGlSurfaceCreated();
     public static native void nativeGlSurfaceChanged(int w, int h);
     public static native void nativeGlSurfaceDestroyed();

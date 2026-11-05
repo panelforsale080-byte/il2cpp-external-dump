@@ -1,10 +1,9 @@
 #include "ui_core.hpp"
 #include "clip_android.hpp"
+#include "path_util.hpp"
 #include <jni.h>
 
 static JavaVM *g_vm = nullptr;
-
-extern "C" void ui_set_files_dir(const char *path);
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
     g_vm = vm;
@@ -31,6 +30,16 @@ Java_com_il2cpp_externaldump_NativeBridge_nativeSetContext(JNIEnv *env, jclass, 
             ui_set_files_dir(utf);
             env->ReleaseStringUTFChars(path, utf);
         }
+    }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_il2cpp_externaldump_NativeBridge_nativeSetSdcardDir(JNIEnv *env, jclass, jstring path) {
+    if (!path) return;
+    const char *utf = env->GetStringUTFChars(path, nullptr);
+    if (utf) {
+        ui_set_sdcard_dir(utf);
+        env->ReleaseStringUTFChars(path, utf);
     }
 }
 

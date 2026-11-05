@@ -3,6 +3,7 @@
 #include "ui_log.hpp"
 #include "clip_android.hpp"
 #include "il2cpp_remote.hpp"
+#include "path_util.hpp"
 
 #include <android/input.h>
 #include <GLES2/gl2.h>
@@ -40,7 +41,6 @@ static std::atomic<bool> g_dumpRunning{false};
 static std::atomic<float> g_dumpProgress{0.f};
 static char g_dumpStatus[256] = "Select a process and tap Generate dump.cs";
 
-static std::string g_filesDir = "/sdcard/Download";
 
 static void apply_theme() {
     ImGuiStyle &s = ImGui::GetStyle();
@@ -163,7 +163,7 @@ static void draw_header() {
     ImGui::TextColored(ImVec4(0.55f, 0.82f, 1.f, 1.f), "IL2CPP DUMPER");
     ImGui::SameLine();
     ImGui::TextDisabled("  external");
-    ImGui::TextWrapped("Universal dump.cs — any IL2CPP game · conRent format · root recommended");
+    ImGui::TextWrapped("Universal dump.cs - any IL2CPP game - conRent format - root recommended");
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }
@@ -197,18 +197,21 @@ static void draw_ui() {
         const bool sel = !g_useManualPid && g_selected == (int)row;
         ImGui::PushID((int)p.pid);
 
-        char label[384];
-        const char *name = p.cmdline[0] ? p.cmdline : "(no name)";
-        std::snprintf(label, sizeof(label), "%-7d  %s%s###r%zu", (int)p.pid, name,
-                      p.hasIl2Cpp ? "  · il2cpp" : "", row);
+        const char *name = p.cmdline[0] ? p.cmdline : proc_comm_fallback(p.pid);
+        char rowLabel[400];
+        std::snprintf(rowLabel, sizeof(rowLabel), "%d  |  %s%s", (int)p.pid, name,
+                      p.hasIl2Cpp ? "  (IL2CPP)" : "");
 
-        if (p.hasIl2Cpp) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.92f, 0.72f, 1.f));
-        if (ImGui::Selectable(label, sel, 0, ImVec2(-1, 38.f))) {
+        if (sel) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.42f, 0.72f, 1.f));
+        else if (p.hasIl2Cpp) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.10f, 0.28f, 0.22f, 1.f));
+        else ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.12f, 0.14f, 0.20f, 1.f));
+
+        if (ImGui::Button(rowLabel, ImVec2(-1, 42.f))) {
             g_useManualPid = false;
             g_selected = (int)row;
             g_selectedPid = p.pid;
         }
-        if (p.hasIl2Cpp) ImGui::PopStyleColor();
+        ImGui::PopStyleColor();
         ImGui::PopID();
     }
 
@@ -261,13 +264,14 @@ static void draw_ui() {
             std::snprintf(cmd, sizeof(cmd), "%s", g_procs[g_selected].cmdline);
         else
             std::snprintf(cmd, sizeof(cmd), "manual pid %d", (int)g_selectedPid);
-        std::thread(run_dump_thread, g_selectedPid, std::string(cmd), g_filesDir + "/dump.cs").detach();
+        const std::string out = dump_output_path(cmd, g_selectedPid);
+        std::thread(run_dump_thread, g_selectedPid, std::string(cmd), out).detach();
     }
     ImGui::EndDisabled();
     ImGui::PopStyleVar();
     ImGui::PopStyleColor();
 
-    ImGui::TextDisabled("Output: %s/dump.cs", g_filesDir.c_str());
+    ImGui::TextDisabled("Save: %s/<package>_dump.cs", ui_sdcard_dir().c_str());
 
     ImGui::Spacing();
     ImGui::Separator();
@@ -299,11 +303,7 @@ static void draw_ui() {
 void ui_pipeline_idle() {
     refresh_process_list();
     ui_log("[app] IL2CPP Dumper ready (standalone)");
-    ui_log("[app] files: %s", g_filesDir.c_str());
-}
-
-extern "C" void ui_set_files_dir(const char *path) {
-    if (path && path[0]) g_filesDir = path;
+    ui_log("[app] sdcard: %s", ui_sdcard_dir().c_str());
 }
 
 static bool init_imgui_backends() {
