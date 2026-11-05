@@ -8,11 +8,12 @@ Pure C++ (ImGui) Android overlay to dump **dump.cs** from **any IL2CPP process**
 
 ## Usage
 
-1. Install APK (root recommended to read other apps’ memory).
-2. Allow overlay → **Start overlay**.
-3. Open the target game (wait until IL2CPP is loaded).
-4. Tap **≡** → **Refresh processes** → select PID → **Dump dump.cs**.
-5. Output: `Android/data/com.il2cpp.externaldump/files/dump.cs` (or app files dir from context).
+1. Install and open the app (full-screen native UI — **no overlay**).
+2. Open the target game (IL2CPP loaded).
+3. **Refresh** → select process → **Generate dump.cs** (watch log + progress).
+4. Output: `Android/data/com.il2cpp.externaldump/files/dump.cs`.
+
+Root helps read other apps’ memory.
 
 ## Build
 

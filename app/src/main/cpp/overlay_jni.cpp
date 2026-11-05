@@ -3,8 +3,6 @@
 #include <jni.h>
 
 static JavaVM *g_vm = nullptr;
-static jclass g_bridgeCls = nullptr;
-static jmethodID g_setMenuTouch = nullptr;
 
 extern "C" void ui_set_files_dir(const char *path);
 
@@ -13,19 +11,8 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM *vm, void *) {
     return JNI_VERSION_1_6;
 }
 
-static void notify_menu_touch(bool on) {
-    if (!g_vm || !g_bridgeCls || !g_setMenuTouch) return;
-    JNIEnv *env = nullptr;
-    if (g_vm->AttachCurrentThread(&env, nullptr) != JNI_OK || !env) return;
-    env->CallStaticVoidMethod(g_bridgeCls, g_setMenuTouch, on ? JNI_TRUE : JNI_FALSE);
-    if (env->ExceptionCheck()) env->ExceptionClear();
-}
-
 extern "C" JNIEXPORT void JNICALL
-Java_com_il2cpp_externaldump_NativeBridge_nativeInit(JNIEnv *env, jclass clazz) {
-    if (!g_bridgeCls) g_bridgeCls = (jclass)env->NewGlobalRef(clazz);
-    if (!g_setMenuTouch)
-        g_setMenuTouch = env->GetStaticMethodID(clazz, "applyMenuTouch", "(Z)V");
+Java_com_il2cpp_externaldump_NativeBridge_nativeInit(JNIEnv *, jclass) {
     ui_pipeline_idle();
 }
 
@@ -48,11 +35,6 @@ Java_com_il2cpp_externaldump_NativeBridge_nativeSetContext(JNIEnv *env, jclass, 
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_il2cpp_externaldump_NativeBridge_nativeSetDisplaySize(JNIEnv *, jclass, jint w, jint h) {
-    ui_set_display_size((int)w, (int)h);
-}
-
-extern "C" JNIEXPORT void JNICALL
 Java_com_il2cpp_externaldump_NativeBridge_nativeGlSurfaceCreated(JNIEnv *, jclass) {
     ui_gl_surface_created();
 }
@@ -70,32 +52,9 @@ Java_com_il2cpp_externaldump_NativeBridge_nativeGlSurfaceDestroyed(JNIEnv *, jcl
 extern "C" JNIEXPORT void JNICALL
 Java_com_il2cpp_externaldump_NativeBridge_nativeGlDrawFrame(JNIEnv *, jclass) {
     ui_gl_draw_frame();
-    static bool lastMenu = false;
-    const bool now = ui_menu_interactive();
-    if (now != lastMenu) {
-        lastMenu = now;
-        notify_menu_touch(now);
-    }
 }
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_il2cpp_externaldump_NativeBridge_nativeTouch(JNIEnv *, jclass, jint action, jfloat x, jfloat y) {
     ui_touch((int)action, (float)x, (float)y);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_il2cpp_externaldump_NativeBridge_nativeOpenMenu(JNIEnv *, jclass) {
-    ui_open_menu();
-    notify_menu_touch(true);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_il2cpp_externaldump_NativeBridge_nativeToggleMenu(JNIEnv *, jclass) {
-    ui_toggle_menu();
-    notify_menu_touch(ui_menu_interactive());
-}
-
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_il2cpp_externaldump_NativeBridge_nativeIsMenuInteractive(JNIEnv *, jclass) {
-    return ui_menu_interactive() ? JNI_TRUE : JNI_FALSE;
 }

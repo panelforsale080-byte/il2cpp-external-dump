@@ -4,10 +4,9 @@
 #include "clip_android.hpp"
 #include "il2cpp_remote.hpp"
 
-#include <android/log.h>
+#include <android/input.h>
 #include <GLES2/gl2.h>
 #include <atomic>
-#include <chrono>
 #include <cstdio>
 #include <mutex>
 #include <string>
@@ -18,7 +17,6 @@
 #include "imgui_impl_opengl3.h"
 
 static int g_width = 0, g_height = 0;
-static int g_displayW = 0, g_displayH = 0;
 ImVec2 initialScreenSize;
 ImVec2 &ui_initial_screen_size() { return initialScreenSize; }
 
@@ -27,7 +25,6 @@ static bool g_imguiBackend = false;
 static std::mutex g_glMu;
 static const char *g_glslVersion = "#version 100";
 
-static bool g_showMenu = true;
 static bool g_logScrollBottom = true;
 static bool g_filterIl2CppOnly = true;
 static char g_search[128] = {};
@@ -39,31 +36,53 @@ static pid_t g_selectedPid = 0;
 
 static std::atomic<bool> g_dumpRunning{false};
 static std::atomic<float> g_dumpProgress{0.f};
-static char g_dumpStatus[256] = "Ready";
+static char g_dumpStatus[256] = "Select a process and tap Generate dump.cs";
 
 static std::string g_filesDir = "/sdcard/Download";
 
-static void apply_menu_style() {
+static void apply_theme() {
     ImGuiStyle &s = ImGui::GetStyle();
     ImVec4 *c = s.Colors;
-    s.WindowRounding = 12.f;
-    s.FrameRounding = 8.f;
-    s.GrabRounding = 6.f;
-    s.ScrollbarRounding = 8.f;
-    s.WindowPadding = ImVec2(14.f, 12.f);
-    s.ItemSpacing = ImVec2(10.f, 8.f);
+    s.WindowRounding = 0.f;
+    s.ChildRounding = 14.f;
+    s.FrameRounding = 10.f;
+    s.GrabRounding = 8.f;
+    s.ScrollbarRounding = 10.f;
+    s.WindowPadding = ImVec2(18.f, 16.f);
+    s.FramePadding = ImVec2(12.f, 10.f);
+    s.ItemSpacing = ImVec2(12.f, 10.f);
+    s.ItemInnerSpacing = ImVec2(8.f, 6.f);
     s.WindowBorderSize = 0.f;
-    c[ImGuiCol_WindowBg] = ImVec4(0.06f, 0.07f, 0.11f, 0.94f);
-    c[ImGuiCol_TitleBg] = ImVec4(0.04f, 0.05f, 0.09f, 1.f);
-    c[ImGuiCol_TitleBgActive] = ImVec4(0.12f, 0.22f, 0.45f, 1.f);
-    c[ImGuiCol_Button] = ImVec4(0.15f, 0.42f, 0.78f, 0.85f);
-    c[ImGuiCol_ButtonHovered] = ImVec4(0.20f, 0.55f, 0.95f, 1.f);
-    c[ImGuiCol_ButtonActive] = ImVec4(0.10f, 0.35f, 0.65f, 1.f);
-    c[ImGuiCol_Header] = ImVec4(0.12f, 0.35f, 0.62f, 0.55f);
-    c[ImGuiCol_HeaderHovered] = ImVec4(0.18f, 0.48f, 0.82f, 0.75f);
-    c[ImGuiCol_FrameBg] = ImVec4(0.10f, 0.11f, 0.16f, 0.9f);
-    c[ImGuiCol_CheckMark] = ImVec4(0.35f, 0.85f, 1.f, 1.f);
-    c[ImGuiCol_Separator] = ImVec4(0.25f, 0.35f, 0.55f, 0.5f);
+    s.ChildBorderSize = 1.f;
+
+    const ImVec4 bg = ImVec4(0.05f, 0.06f, 0.09f, 1.f);
+    const ImVec4 panel = ImVec4(0.08f, 0.10f, 0.14f, 1.f);
+    const ImVec4 accent = ImVec4(0.22f, 0.55f, 0.98f, 1.f);
+    const ImVec4 accentDim = ImVec4(0.14f, 0.38f, 0.72f, 1.f);
+
+    c[ImGuiCol_Text] = ImVec4(0.92f, 0.94f, 0.97f, 1.f);
+    c[ImGuiCol_TextDisabled] = ImVec4(0.45f, 0.50f, 0.58f, 1.f);
+    c[ImGuiCol_WindowBg] = bg;
+    c[ImGuiCol_ChildBg] = panel;
+    c[ImGuiCol_PopupBg] = ImVec4(0.07f, 0.09f, 0.12f, 0.98f);
+    c[ImGuiCol_Border] = ImVec4(0.18f, 0.24f, 0.34f, 0.6f);
+    c[ImGuiCol_FrameBg] = ImVec4(0.10f, 0.12f, 0.17f, 1.f);
+    c[ImGuiCol_FrameBgHovered] = ImVec4(0.13f, 0.16f, 0.22f, 1.f);
+    c[ImGuiCol_FrameBgActive] = ImVec4(0.15f, 0.19f, 0.26f, 1.f);
+    c[ImGuiCol_TitleBg] = bg;
+    c[ImGuiCol_TitleBgActive] = bg;
+    c[ImGuiCol_Button] = accentDim;
+    c[ImGuiCol_ButtonHovered] = accent;
+    c[ImGuiCol_ButtonActive] = ImVec4(0.12f, 0.32f, 0.62f, 1.f);
+    c[ImGuiCol_Header] = ImVec4(0.14f, 0.32f, 0.58f, 0.45f);
+    c[ImGuiCol_HeaderHovered] = ImVec4(0.18f, 0.42f, 0.75f, 0.65f);
+    c[ImGuiCol_HeaderActive] = ImVec4(0.20f, 0.48f, 0.85f, 0.85f);
+    c[ImGuiCol_CheckMark] = ImVec4(0.45f, 0.82f, 1.f, 1.f);
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = ImVec4(0.35f, 0.65f, 1.f, 1.f);
+    c[ImGuiCol_Separator] = ImVec4(0.22f, 0.30f, 0.42f, 0.5f);
+    c[ImGuiCol_ProgressBar] = accent;
+    c[ImGuiCol_ProgressBarBg] = ImVec4(0.12f, 0.14f, 0.20f, 1.f);
 }
 
 static void refresh_process_list() {
@@ -86,25 +105,26 @@ static void refresh_process_list() {
             break;
         }
     }
-    ui_log("[proc] listed %zu (filter il2cpp=%s)", g_procCount, g_filterIl2CppOnly ? "on" : "off");
+    ui_log("[proc] %zu listed (il2cpp filter=%s)", g_procCount, g_filterIl2CppOnly ? "on" : "off");
 }
 
 static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath) {
     g_dumpRunning.store(true);
     g_dumpProgress.store(0.f);
-    std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dumping PID %d...", (int)pid);
+    std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dumping PID %d…", (int)pid);
     ui_log("[dump] start pid=%d", (int)pid);
-    ui_log("[dump] target: %s", cmdline.c_str());
+    ui_log("[dump] %s", cmdline.c_str());
 
     RemoteIl2CppExecutor ex{};
     char err[256] = {};
     if (!ex.open(pid, err, sizeof(err))) {
-        ui_log("[dump] ERROR open: %s", err);
+        ui_log("[dump] ERROR: %s", err);
         std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Failed: %s", err);
         g_dumpRunning.store(false);
         return;
     }
-    ui_log("[dump] lib=%s base=0x%llx", ex.info.libPath, (unsigned long long)ex.info.base);
+    ui_log("[dump] lib=%s", ex.info.libPath);
+    ui_log("[dump] base=0x%llx", (unsigned long long)ex.info.base);
     if (ex.info.note[0]) ui_log("[dump] %s", ex.info.note);
 
     const bool ok = ex.run_dump(
@@ -114,92 +134,134 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
 
     ex.close();
     if (ok) {
-        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Done → %s", outPath.c_str());
-        ui_log("[dump] output: %s", outPath.c_str());
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Saved: %s", outPath.c_str());
+        ui_log("[dump] OK → %s", outPath.c_str());
     } else {
-        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dump failed — see log");
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dump failed — check log");
     }
     g_dumpProgress.store(ok ? 1.f : 0.f);
     g_dumpRunning.store(false);
 }
 
+static void draw_header() {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.07f, 0.11f, 0.20f, 1.f));
+    ImGui::BeginChild("hdr", ImVec2(-1, 72), true);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.f);
+    ImGui::TextColored(ImVec4(0.55f, 0.82f, 1.f, 1.f), "IL2CPP DUMPER");
+    ImGui::SameLine();
+    ImGui::TextDisabled("  external");
+    ImGui::TextWrapped("Universal dump.cs — any IL2CPP game · conRent format · root recommended");
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+}
+
 static void draw_ui() {
-    if (!g_showMenu) return;
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(display);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.f, 12.f));
+    ImGui::Begin("##root", nullptr,
+                 ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus);
 
-    ImGui::SetNextWindowSize({400, 520}, ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowBgAlpha(0.95f);
-    if (ImGui::Begin("IL2CPP External Dump", &g_showMenu, ImGuiWindowFlags_None)) {
-        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.f, 1.f), "Universal dump.cs");
-        ImGui::TextDisabled("Domain resolve (mlbb-esp) + conRent dump format");
-        ImGui::Spacing();
+    draw_header();
+    ImGui::Spacing();
 
-        if (ImGui::Button("Refresh processes", ImVec2(-1, 0))) refresh_process_list();
-        ImGui::Checkbox("Show IL2CPP processes only", &g_filterIl2CppOnly);
-        ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextWithHint("##search", "Filter cmdline...", g_search, sizeof(g_search));
-        if (ImGui::IsItemDeactivatedAfterEdit()) refresh_process_list();
+    ImGui::BeginChild("main", ImVec2(-1, -1), false);
+    if (ImGui::Button("Refresh", ImVec2(100.f, 0.f))) refresh_process_list();
+    ImGui::SameLine();
+    if (ImGui::Checkbox("IL2CPP only", &g_filterIl2CppOnly)) refresh_process_list();
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##q", "Search package / process…", g_search, sizeof(g_search));
+    if (ImGui::IsItemDeactivatedAfterEdit()) refresh_process_list();
 
-        ImGui::BeginChild("plist", ImVec2(0, 160), true);
-        for (size_t i = 0; i < g_procCount; ++i) {
-            char label[320];
-            std::snprintf(label, sizeof(label), "%s  [%d]%s", g_procs[i].cmdline, (int)g_procs[i].pid,
-                          g_procs[i].hasIl2Cpp ? "  *il2cpp*" : "");
-            if (ImGui::Selectable(label, g_selected == (int)i)) {
-                g_selected = (int)i;
-                g_selectedPid = g_procs[i].pid;
+    const float listH = display.y * 0.32f;
+    ImGui::BeginChild("plist", ImVec2(-1, listH), true);
+    ImGuiListClipper clipper;
+    clipper.Begin((int)g_procCount);
+    while (clipper.Step()) {
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+            const auto &p = g_procs[row];
+            const bool sel = g_selected == row;
+            ImGui::PushID(row);
+            if (p.hasIl2Cpp) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.9f, 0.75f, 1.f));
+            char line[360];
+            std::snprintf(line, sizeof(line), "[%d]  %s", (int)p.pid, p.cmdline);
+            if (ImGui::Selectable(line, sel, 0, ImVec2(-1, 0))) {
+                g_selected = row;
+                g_selectedPid = p.pid;
             }
+            if (p.hasIl2Cpp) ImGui::PopStyleColor();
+            ImGui::PopID();
         }
-        if (g_procCount == 0)
-            ImGui::TextDisabled("No processes — tap Refresh (root helps read other apps)");
-        ImGui::EndChild();
-
-        const bool canDump = g_selected >= 0 && g_selected < (int)g_procCount && !g_dumpRunning.load();
-        if (g_selected >= 0 && g_selected < (int)g_procCount) {
-            ImGui::Text("Selected PID: %d", (int)g_procs[g_selected].pid);
-            if (!proc_probe_read(g_procs[g_selected].pid))
-                ImGui::TextColored(ImVec4(1.f, 0.45f, 0.35f, 1.f), "Cannot read memory — need root / same user");
-        }
-
-        ImGui::Spacing();
-        if (g_dumpRunning.load()) {
-            ImGui::ProgressBar(g_dumpProgress.load(), ImVec2(-1, 0));
-            ImGui::TextWrapped("%s", g_dumpStatus);
-        } else {
-            ImGui::TextWrapped("%s", g_dumpStatus);
-        }
-
-        ImGui::BeginDisabled(!canDump);
-        if (ImGui::Button("Dump dump.cs", ImVec2(-1, 44))) {
-            const auto &p = g_procs[g_selected];
-            const std::string out = g_filesDir + "/dump.cs";
-            std::thread(run_dump_thread, p.pid, std::string(p.cmdline), out).detach();
-        }
-        ImGui::EndDisabled();
-
-        ImGui::SeparatorText("Log");
-        ImGui::Checkbox("Auto-scroll", &g_logScrollBottom);
-        if (ImGui::Button("Copy log")) {
-            static char logCopy[65536];
-            ui_log_copy_all(logCopy, sizeof(logCopy));
-            if (android_copy_to_clipboard(logCopy)) ui_log("[ui] log copied");
-        }
-        ImGui::SameLine();
-        if (ImGui::Button("Clear")) ui_log_clear();
-
-        static char logText[65536];
-        ui_log_copy_all(logText, sizeof(logText));
-        ImGui::BeginChild("logs", {0, 140}, true);
-        ImGui::TextUnformatted(logText);
-        if (g_logScrollBottom) ImGui::SetScrollHereY(1.0f);
-        ImGui::EndChild();
     }
+    if (g_procCount == 0)
+        ImGui::TextDisabled("No processes — Refresh (open game first; root to see other apps)");
+    ImGui::EndChild();
+
+    ImGui::Spacing();
+    ImGui::BeginChild("status", ImVec2(-1, 88), true);
+    if (g_selected >= 0 && g_selected < (int)g_procCount) {
+        const auto &p = g_procs[g_selected];
+        ImGui::Text("Target PID %d", (int)p.pid);
+        ImGui::TextWrapped("%s", p.cmdline);
+        if (!proc_probe_read(p.pid))
+            ImGui::TextColored(ImVec4(1.f, 0.42f, 0.38f, 1.f), "Cannot read memory — enable root");
+    } else {
+        ImGui::TextDisabled("No process selected");
+    }
+    if (g_dumpRunning.load()) {
+        ImGui::ProgressBar(g_dumpProgress.load(), ImVec2(-1, 22.f));
+    }
+    ImGui::TextWrapped("%s", g_dumpStatus);
+    ImGui::EndChild();
+
+    const bool canDump = g_selected >= 0 && g_selected < (int)g_procCount && !g_dumpRunning.load();
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.52f, 0.95f, canDump ? 1.f : 0.35f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.f, 14.f));
+    ImGui::BeginDisabled(!canDump);
+    if (ImGui::Button("Generate dump.cs", ImVec2(-1, 0.f))) {
+        const auto &p = g_procs[g_selected];
+        std::thread(run_dump_thread, p.pid, std::string(p.cmdline), g_filesDir + "/dump.cs").detach();
+    }
+    ImGui::EndDisabled();
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+
+    ImGui::TextDisabled("Output: %s/dump.cs", g_filesDir.c_str());
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    if (ImGui::Button("Copy log", ImVec2(90.f, 0.f))) {
+        static char logCopy[65536];
+        ui_log_copy_all(logCopy, sizeof(logCopy));
+        if (android_copy_to_clipboard(logCopy)) ui_log("[ui] log copied");
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear", ImVec2(70.f, 0.f))) ui_log_clear();
+    ImGui::SameLine();
+    ImGui::Checkbox("Auto-scroll log", &g_logScrollBottom);
+
+    static char logText[65536];
+    ui_log_copy_all(logText, sizeof(logText));
+    const float logH = ImGui::GetContentRegionAvail().y;
+    ImGui::BeginChild("log", ImVec2(-1, logH > 80.f ? logH : 80.f), true);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.72f, 0.78f, 0.86f, 1.f));
+    ImGui::TextUnformatted(logText);
+    ImGui::PopStyleColor();
+    if (g_logScrollBottom) ImGui::SetScrollHereY(1.0f);
+    ImGui::EndChild();
+
+    ImGui::EndChild();
     ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 void ui_pipeline_idle() {
     refresh_process_list();
-    ui_log("[app] IL2CPP external dumper ready");
-    ui_log("[app] output dir: %s", g_filesDir.c_str());
+    ui_log("[app] IL2CPP Dumper ready (standalone)");
+    ui_log("[app] files: %s", g_filesDir.c_str());
 }
 
 extern "C" void ui_set_files_dir(const char *path) {
@@ -213,10 +275,11 @@ static bool init_imgui_backends() {
         ImGuiIO &io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.ConfigFlags |= ImGuiConfigFlags_IsTouchScreen;
-        ImGui::StyleColorsDark();
-        apply_menu_style();
+        io.FontGlobalScale = 1.08f;
+        apply_theme();
         io.Fonts->AddFontDefault();
-        ImGui::GetStyle().TouchExtraPadding = ImVec2(4.f, 4.f);
+        ImGui::GetStyle().TouchExtraPadding = ImVec2(6.f, 6.f);
+        initialScreenSize = io.DisplaySize;
     }
     if (g_imguiBackend) {
         ImGui_ImplOpenGL3_Shutdown();
@@ -229,13 +292,6 @@ static bool init_imgui_backends() {
     return true;
 }
 
-void ui_set_display_size(int width, int height) {
-    if (width > 0 && height > 0) {
-        g_displayW = width;
-        g_displayH = height;
-    }
-}
-
 void ui_gl_surface_created() {
     std::lock_guard<std::mutex> lock(g_glMu);
     g_glReady = init_imgui_backends();
@@ -245,6 +301,7 @@ void ui_gl_surface_changed(int width, int height) {
     std::lock_guard<std::mutex> lock(g_glMu);
     g_width = width > 0 ? width : 1;
     g_height = height > 0 ? height : 1;
+    initialScreenSize = ImVec2((float)g_width, (float)g_height);
 }
 
 void ui_gl_surface_destroyed() {
@@ -269,7 +326,7 @@ void ui_gl_draw_frame() {
     ImDrawData *dd = ImGui::GetDrawData();
     if (!dd) return;
     glViewport(0, 0, g_width, g_height);
-    glClearColor(0.f, 0.f, 0.f, 0.f);
+    glClearColor(0.05f, 0.06f, 0.09f, 1.f);
     glClear(GL_COLOR_BUFFER_BIT);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -278,13 +335,9 @@ void ui_gl_draw_frame() {
 
 void ui_touch(int action, float x, float y) {
     ImGuiIO &io = ImGui::GetIO();
-    io.MousePos = ImVec2(x, y);
-    if (action == 0)
-        io.MouseDown[0] = true;
-    else if (action == 1)
-        io.MouseDown[0] = false;
+    io.AddMousePosEvent(x, y);
+    if (action == AMOTION_EVENT_ACTION_DOWN || action == 0)
+        io.AddMouseButtonEvent(0, true);
+    else if (action == AMOTION_EVENT_ACTION_UP || action == 1)
+        io.AddMouseButtonEvent(0, false);
 }
-
-void ui_open_menu() { g_showMenu = true; }
-void ui_toggle_menu() { g_showMenu = !g_showMenu; }
-bool ui_menu_interactive() { return g_showMenu; }
