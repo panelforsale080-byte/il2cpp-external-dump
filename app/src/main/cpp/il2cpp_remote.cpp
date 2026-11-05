@@ -1,5 +1,6 @@
 #include "il2cpp_remote.hpp"
 #include "mem.hpp"
+#include "remote_call.hpp"
 #include "remote_elf.hpp"
 #include "remote_il2cpp.hpp"
 #include "ui_log.hpp"
@@ -72,7 +73,8 @@ static const char *kDumpSyms[] = {
 
 uintptr_t RemoteIl2CppExecutor::scratch(size_t bytes) {
     if (!sessionOpen_) return 0;
-    const uintptr_t p = remote_session_scratch(session_, scratchSlot_++, bytes);
+    const int slot = scratchSlot_++ % kScratchUserSlots;
+    const uintptr_t p = remote_session_scratch(session_, slot, bytes);
     if (p) {
         uint64_t z = 0;
         mem_write(pid, p, &z, std::min(bytes, sizeof(z)));

@@ -116,8 +116,9 @@ static bool session_begin_locked(pid_t pid, RemoteSession &s) {
         return false;
     }
     s.sp = saved->sp;
+    s.trapSlotCycle = 0;
     s.attached = true;
-    ui_log("[ptrace] attached ok");
+    ui_log("[ptrace] attached ok sp=0x%llx", (unsigned long long)s.sp);
     return true;
 }
 
@@ -152,7 +153,8 @@ void remote_session_end(RemoteSession &s) {
 }
 
 uintptr_t remote_session_scratch(RemoteSession &s, int slot, size_t bytes) {
-    if (!s.attached || slot < 0 || slot > 32) return 0;
+    if (!s.attached || slot < 0 || slot >= kScratchTrapBase + kScratchTrapSlots) return 0;
+    if (!s.sp) return 0;
     const size_t need = (bytes + 15) & ~size_t(15);
     const uintptr_t base = (uintptr_t)(s.sp - 0x800ULL - (uintptr_t)slot * 0x80ULL);
     if (need > 0x70) return 0;
@@ -184,9 +186,13 @@ static bool wait_tracee_stop(RemoteSession &s, int &st, int timeoutMs) {
 }
 
 static uintptr_t trap_return_site(RemoteSession &s) {
-    static int trapSlot = 0;
-    const uintptr_t p = remote_session_scratch(s, 40 + (trapSlot++ % 8), 4);
-    if (!p) return 0;
+    const int slot = kScratchTrapBase + (s.trapSlotCycle++ % kScratchTrapSlots);
+    const uintptr_t p = remote_session_scratch(s, slot, 4);
+    if (!p) {
+        std::snprintf(s.err, sizeof(s.err), "trap scratch slot=%d sp=0x%llx", slot,
+                      (unsigned long long)s.sp);
+        return 0;
+    }
     const uint32_t brk = 0xD4200000u; // BRK #0
     mem_write(s.pid, p, &brk, sizeof(brk));
     return p;

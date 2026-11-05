@@ -11,9 +11,15 @@ struct RemoteSession {
 #if defined(__aarch64__)
     alignas(8) unsigned char savedRegs[4096] = {};
     uint64_t sp = 0;
+    int trapSlotCycle = 0;
 #endif
     char err[160] = {};
 };
+
+/** User scratch slots 0 .. kScratchUserSlots-1; trap BRK sites use high slots. */
+constexpr int kScratchUserSlots = 240;
+constexpr int kScratchTrapBase = 240;
+constexpr int kScratchTrapSlots = 16;
 
 bool remote_session_begin(pid_t pid, RemoteSession &s);
 bool remote_session_begin_try(pid_t pid, RemoteSession &s);
