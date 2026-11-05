@@ -173,12 +173,27 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
         return;
     }
 
-    ui_log("[dump] ERROR: global-metadata not loaded");
-    ui_log("[dump] conRent/mlbb: in-process il2cpp_domain_get + Dump(); external uses metadata file only");
-    ui_log("[dump] Subway/GSpace: keep game open; path like …/files/il2cpp/Metadata/global-metadata.dat");
-    ui_log("[dump] ptrace il2cpp_thread_attach skipped (SIGSEGV on stopped Unity threads)");
-    std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Metadata dump failed — see log");
-    g_dumpProgress.store(0.f);
+    ui_log("[dump] metadata failed — conRent live dump (liblogic: memory assemblies, no attach)…");
+    RemoteIl2CppExecutor ex{};
+    ex.pid = pid;
+    ex.info = il2;
+    char err[256] = {};
+    if (!ex.open_attach_only(pid, err, sizeof(err))) {
+        ui_log("[dump] ERROR: %s", err);
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dump failed — check log");
+        g_dumpRunning.store(false);
+        return;
+    }
+    const bool ok = ex.run_dump_runtime(outPath, cmdline, logFn, progFn);
+    ex.close();
+    if (ok) {
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Saved: %s", outPath.c_str());
+        ui_log("[dump] OK → %s", outPath.c_str());
+    } else {
+        ui_log("[dump] ERROR: live dump failed — MLBB needs game in lobby/match; metadata encrypted v1024");
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dump failed — see log");
+    }
+    g_dumpProgress.store(ok ? 1.f : 0.f);
     g_dumpRunning.store(false);
 }
 

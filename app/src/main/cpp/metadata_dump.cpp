@@ -1,5 +1,6 @@
 #include "metadata_dump.hpp"
 #include "mem.hpp"
+#include "remote_elf.hpp"
 #include "ui_log.hpp"
 
 #include <algorithm>
@@ -370,7 +371,7 @@ static bool try_decrypt_il2cpp_encrypt(std::vector<uint8_t> &buf) {
     uint32_t kl_field = 0;
     std::memcpy(&kl_field, buf.data() + 1024, sizeof(kl_field));
     const uint32_t kl = kl_field & 0xffffu;
-    if (kl < 4 || kl > 4096) {
+    if (kl < 64 || kl > 256) {
         ui_log("[metadata] Il2CppEncrypt skip kl_field=0x%x kl=%u", kl_field, kl);
         return false;
     }
@@ -417,6 +418,24 @@ static bool try_decrypt_mlbb_legacy(std::vector<uint8_t> &buf) {
     return true;
 }
 
+static bool try_decrypt_mlbb_full_xor(std::vector<uint8_t> &buf, uint8_t key, size_t start) {
+    if (start >= buf.size()) return false;
+    std::vector<uint8_t> c = buf;
+    for (size_t i = start; i < c.size(); ++i) c[i] ^= key;
+    if (try_metadata_blob_accept(c, 0)) {
+        buf = std::move(c);
+        ui_log("[metadata] MLBB xor 0x%02x from +%zu", key, start);
+        return true;
+    }
+    if (start <= 1024 && c.size() > 1024 + kMetaHeaderV29Size &&
+        try_metadata_blob_accept(c, 1024)) {
+        buf = std::move(c);
+        ui_log("[metadata] MLBB xor 0x%02x @+1024", key);
+        return true;
+    }
+    return false;
+}
+
 static bool try_decrypt_mlbb_v1024_wrapper(std::vector<uint8_t> &buf) {
     if (buf.size() < kMetaHeaderV29Size + 1024) return false;
     int32_t version = 0;
@@ -426,6 +445,11 @@ static bool try_decrypt_mlbb_v1024_wrapper(std::vector<uint8_t> &buf) {
     if (try_metadata_blob_accept(buf, 1024)) {
         ui_log("[metadata] MLBB v1024 wrapper — header @ +1024");
         return true;
+    }
+
+    for (uint8_t key : {uint8_t(0xC3), uint8_t(0x96), uint8_t(0x5A), uint8_t(0xFF)}) {
+        if (try_decrypt_mlbb_full_xor(buf, key, 4)) return true;
+        if (try_decrypt_mlbb_full_xor(buf, key, 1024)) return true;
     }
 
     const uint8_t keys[] = {0xC3, 0x5A, 0xA5, 0x96, 0x69, 0xFF, 0x55, 0xAA};
@@ -463,20 +487,21 @@ static bool metadata_try_decrypt_file(std::vector<uint8_t> &buf) {
     if (encrypted_hint) {
         ui_log("[metadata] encrypted global-metadata (v=%d) — MLBB/liblogic decrypt", version);
         if (version == 1024 && try_decrypt_mlbb_v1024_wrapper(buf)) return true;
-        std::vector<uint8_t> copy = buf;
-        if (try_decrypt_il2cpp_encrypt(copy)) {
-            if (try_metadata_blob_accept(copy, 0)) {
-                buf.swap(copy);
-                return true;
-            }
-            size_t hdr_off = 0;
-            if (scan_bytes_for_header(copy.data(), copy.size(), hdr_off) &&
-                try_metadata_blob_accept(copy, hdr_off)) {
-                buf.swap(copy);
-                return true;
+        if (version != 1024) {
+            std::vector<uint8_t> copy = buf;
+            if (try_decrypt_il2cpp_encrypt(copy)) {
+                if (try_metadata_blob_accept(copy, 0)) {
+                    buf.swap(copy);
+                    return true;
+                }
+                size_t hdr_off = 0;
+                if (scan_bytes_for_header(copy.data(), copy.size(), hdr_off) &&
+                    try_metadata_blob_accept(copy, hdr_off)) {
+                    buf.swap(copy);
+                    return true;
+                }
             }
         }
-        if (version == 1024 && try_decrypt_mlbb_v1024_wrapper(buf)) return true;
     }
     std::vector<uint8_t> copy = buf;
     if (try_decrypt_mlbb_legacy(copy)) {
@@ -524,8 +549,7 @@ static bool metadata_scan_il2cpp_data_pointers(pid_t pid, const char *libPathHin
         if (m.perms[2] == 'x') continue;
         const size_t len = (size_t)(m.end - m.start);
         if (len < 4096 || len > 32 * 1024 * 1024) continue;
-        const size_t step = sizeof(uintptr_t);
-        for (size_t off = 0; off + step <= len; off += step) {
+        for (size_t off = 0; off + sizeof(uintptr_t) <= len; off += 0x40) {
             uintptr_t ptr = 0;
             if (!mem_read(pid, m.start + off, &ptr, sizeof(ptr))) continue;
             if (!mem_ptr_ok(ptr)) continue;
@@ -535,6 +559,30 @@ static bool metadata_scan_il2cpp_data_pointers(pid_t pid, const char *libPathHin
                        libName.c_str(), (unsigned long long)ptr, off);
                 return true;
             }
+        }
+    }
+    ui_log("[metadata] %s .data pointer scan — no metadata ptr", libName.c_str());
+    return false;
+}
+
+static bool metadata_find_elf_global(pid_t pid, uintptr_t il2cppBase, uintptr_t &metaRemote,
+                                     size_t &metaSize) {
+    if (!il2cppBase) return false;
+    static const char *kSyms[] = {"s_GlobalMetadata",
+                                  "_ZN6il2cpp2vm13MetadataCache15s_GlobalMetadataE",
+                                  "g_Metadata"};
+    for (const char *sym : kSyms) {
+        uintptr_t symAddr = 0;
+        if (!elf_remote_sym(pid, il2cppBase, sym, symAddr) || !symAddr) continue;
+        uintptr_t ptr = 0;
+        if (mem_read(pid, symAddr, &ptr, sizeof(ptr)) && mem_ptr_ok(ptr) &&
+            metadata_load_from_remote(pid, ptr, metaRemote, metaSize)) {
+            ui_log("[metadata] %s -> metadata @ 0x%llx", sym, (unsigned long long)ptr);
+            return true;
+        }
+        if (metadata_load_from_remote(pid, symAddr, metaRemote, metaSize)) {
+            ui_log("[metadata] %s direct @ 0x%llx", sym, (unsigned long long)symAddr);
+            return true;
         }
     }
     return false;
@@ -1028,6 +1076,7 @@ bool metadata_find(pid_t pid, uintptr_t il2cppBase, const char *libPathHint, uin
         }
     }
 
+    if (metadata_find_elf_global(pid, il2cppBase, metaRemote, metaSize)) return true;
     if (metadata_scan_il2cpp_data_pointers(pid, libPathHint, il2cppBase, metaRemote, metaSize))
         return true;
     if (metadata_scan_runtime_decrypted(pid, il2cppBase, metaRemote, metaSize)) return true;

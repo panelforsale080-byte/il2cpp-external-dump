@@ -454,23 +454,28 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         return false;
     }
 
-    if (ctx.sym("il2cpp_thread_attach")) {
-        uintptr_t thr = 0;
-        ctx.call1("il2cpp_thread_attach", domain, thr);
-        logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,
-             (unsigned long long)thr);
-    }
-    logf("domain=0x%llx", (unsigned long long)domain);
+    const bool liblogic =
+        ctx.libName.find("logic") != std::string::npos || ctx.libName.find("Logic") != std::string::npos;
+    logf("domain=0x%llx liblogic=%d", (unsigned long long)domain, liblogic ? 1 : 0);
 
     uintptr_t sizeSlot = ctx.scratch(8);
     uintptr_t assemblies = 0;
     size_t asmCount = 0;
-    const bool apiAsm =
-        ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) && assemblies;
-    if (apiAsm) ctx.readMem(sizeSlot, &asmCount, sizeof(asmCount));
-    if (!apiAsm || asmCount == 0) {
-        if (remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
-            logf("assemblies from memory layout count=%zu", asmCount);
+    if (remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
+        logf("assemblies from memory (mlbb-pure / conRent) count=%zu", asmCount);
+    if (asmCount == 0) {
+        if (!liblogic && ctx.sym("il2cpp_thread_attach")) {
+            uintptr_t thr = 0;
+            ctx.call1("il2cpp_thread_attach", domain, thr);
+            logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,
+                 (unsigned long long)thr);
+        }
+        const bool apiAsm =
+            ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) && assemblies;
+        if (apiAsm) ctx.readMem(sizeSlot, &asmCount, sizeof(asmCount));
+        if ((!apiAsm || asmCount == 0) &&
+            remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
+            logf("assemblies from memory retry count=%zu", asmCount);
     }
     if (!assemblies || asmCount == 0) {
         logf("ERROR: no assemblies (ptr=0x%llx count=%zu)", (unsigned long long)assemblies, asmCount);
