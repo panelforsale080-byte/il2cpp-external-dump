@@ -27,7 +27,7 @@ static std::mutex g_glMu;
 static const char *g_glslVersion = "#version 100";
 
 static bool g_logScrollBottom = true;
-static bool g_filterIl2CppOnly = false;
+static bool g_filterIl2CppOnly = true;
 static char g_search[128] = {};
 
 static ProcCandidate g_procs[256];
@@ -95,6 +95,7 @@ static void refresh_process_list() {
     g_procCount = 0;
     const std::string needle = g_search;
     for (size_t i = 0; i < n && g_procCount < 256; ++i) {
+        if (ui_is_own_process(tmp[i].pid, tmp[i].cmdline)) continue;
         if (g_filterIl2CppOnly && !tmp[i].hasIl2Cpp) continue;
         if (!needle.empty()) {
             std::string cmd = tmp[i].cmdline;
@@ -129,10 +130,27 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
     ui_log("[dump] %s", cmdline.c_str());
     ui_log("[dump] attach + resolve IL2CPP…");
 
+    if (ui_is_own_process(pid, cmdline)) {
+        ui_log("[dump] ERROR: this is the dumper app — select the GAME (e.g. com.kiloo.subwaysurf)");
+        ui_log("[dump] conRent/mlbb dump runs inside the game process; external dumper reads game PID");
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Wrong target: pick game, not IL2CPP Dump");
+        g_dumpRunning.store(false);
+        return;
+    }
+    if (!proc_maps_has_il2cpp(pid)) {
+        ui_log("[dump] ERROR: no libil2cpp.so / global-metadata in this PID");
+        ui_log("[dump] Pick a process marked (IL2CPP) — same GSpace as game or root on device");
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Not an IL2CPP game process");
+        g_dumpRunning.store(false);
+        return;
+    }
+
     RemoteIl2CppExecutor ex{};
     char err[256] = {};
     if (!ex.open(pid, err, sizeof(err))) {
         ui_log("[dump] ERROR: %s", err);
+        if (std::strstr(err, "no IL2CPP module"))
+            ui_log("[dump] Hint: target must be Unity/IL2CPP game — not system apps or this dumper");
         std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Failed: %s", err);
         g_dumpRunning.store(false);
         return;
@@ -164,7 +182,8 @@ static void draw_header() {
     ImGui::TextColored(ImVec4(0.55f, 0.82f, 1.f, 1.f), "IL2CPP DUMPER");
     ImGui::SameLine();
     ImGui::TextDisabled("  external");
-    ImGui::TextWrapped("Universal dump.cs - any IL2CPP game - conRent format - root recommended");
+    ImGui::TextWrapped(
+        "Pick the GAME process (IL2CPP tag) — not com.il2cpp.externaldump. Same GSpace as game or root.");
     ImGui::EndChild();
     ImGui::PopStyleColor();
 }

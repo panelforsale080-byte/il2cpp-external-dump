@@ -5,6 +5,18 @@
 
 static std::string g_filesDir = "/sdcard/Download";
 static std::string g_sdcardDir = "/storage/emulated/0/Download";
+static std::string g_ownPackage = "com.il2cpp.externaldump";
+
+void ui_set_own_package(const char *packageId) {
+    if (packageId && packageId[0]) g_ownPackage = packageId;
+}
+
+bool ui_is_own_process(pid_t pid, const std::string &cmdline) {
+    const std::string pkg = package_from_cmdline(cmdline, pid);
+    if (!g_ownPackage.empty() && pkg == g_ownPackage) return true;
+    if (cmdline.find("com.il2cpp.externaldump") != std::string::npos) return true;
+    return false;
+}
 
 void ui_set_files_dir(const char *path) {
     if (path && path[0]) g_filesDir = path;

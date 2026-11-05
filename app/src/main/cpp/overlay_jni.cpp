@@ -19,6 +19,17 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_il2cpp_externaldump_NativeBridge_nativeSetContext(JNIEnv *env, jclass, jobject ctx) {
     android_clip_set_context(g_vm, ctx);
     jclass ctxCls = env->GetObjectClass(ctx);
+    jmethodID getPkg = env->GetMethodID(ctxCls, "getPackageName", "()Ljava/lang/String;");
+    if (getPkg) {
+        jstring pkg = (jstring)env->CallObjectMethod(ctx, getPkg);
+        if (pkg) {
+            const char *utf = env->GetStringUTFChars(pkg, nullptr);
+            if (utf) {
+                ui_set_own_package(utf);
+                env->ReleaseStringUTFChars(pkg, utf);
+            }
+        }
+    }
     jmethodID getFilesDir = env->GetMethodID(ctxCls, "getFilesDir", "()Ljava/io/File;");
     jobject file = env->CallObjectMethod(ctx, getFilesDir);
     if (file) {
