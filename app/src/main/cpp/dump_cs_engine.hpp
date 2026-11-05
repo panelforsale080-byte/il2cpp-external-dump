@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <sys/types.h>
 
 struct DumpCtx {
     pid_t pid = 0;
