@@ -424,6 +424,8 @@ static bool find_assemblies_array_heuristic(pid_t pid, uintptr_t &assembliesOut,
     if (bestCount < 8) return false;
     assembliesOut = bestArr;
     countOut = bestCount;
+    ui_log("[il2cpp] assemblies heuristic array @ 0x%llx count=%zu", (unsigned long long)bestArr,
+           bestCount);
     return true;
 }
 
