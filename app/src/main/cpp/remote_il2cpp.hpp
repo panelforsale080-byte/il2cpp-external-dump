@@ -35,4 +35,5 @@ bool remote_detect_il2cpp(pid_t pid, RemoteIl2CppInfo &out);
 bool remote_refresh_domain_ptr(pid_t pid, RemoteIl2CppInfo &io);
 /** One-shot il2cpp_domain_get in target (fills domain_ptr when static decode fails). */
 bool remote_il2cpp_prime_domain(pid_t pid, RemoteIl2CppInfo &io);
+bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain);
 void remote_il2cpp_invalidate_cache(pid_t pid);

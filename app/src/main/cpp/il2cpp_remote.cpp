@@ -140,9 +140,8 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
         std::snprintf(err, errCap, "no IL2CPP module (il2cpp_domain_get export)");
         return false;
     }
-    if (!remote_il2cpp_prime_domain(pid, info) && !info.domain_ptr) {
+    if (!info.domain_ptr)
         remote_refresh_domain_ptr(pid, info);
-    }
     if (!remote_session_begin(pid, session_)) {
         std::snprintf(err, errCap, "%s", session_.err);
         return false;
@@ -152,6 +151,12 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
     if (!resolve_syms(err, errCap)) {
         close();
         return false;
+    }
+
+    if (!remote_il2cpp_domain_valid(pid, info.domain_ptr)) {
+        uintptr_t live = 0;
+        if (call0("il2cpp_domain_get", live) && remote_il2cpp_domain_valid(pid, live))
+            info.domain_ptr = live;
     }
     return true;
 }
@@ -172,6 +177,8 @@ bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::strin
     ctx.il2cppBase = info.base;
     ctx.il2cppEnd = info.end;
     ctx.libName = info.libBaseName[0] ? info.libBaseName : basename(info.libPath);
+    ctx.domainHint = info.domain_ptr;
+    ctx.domainValid = [this](uintptr_t d) { return remote_il2cpp_domain_valid(pid, d); };
     ctx.sym = [this](const char *n) { return sym(n); };
     ctx.call0 = [this](const char *n, uintptr_t &r) { return call0(n, r); };
     ctx.call1 = [this](const char *n, uintptr_t a0, uintptr_t &r) { return call1(n, a0, r); };

@@ -1,6 +1,7 @@
 #include "remote_call.hpp"
 #include "mem.hpp"
 #include <cstring>
+#include <cstring>
 #include <mutex>
 #include <errno.h>
 #include <sys/ptrace.h>
@@ -96,6 +97,15 @@ uintptr_t remote_session_scratch(RemoteSession &s, int slot, size_t bytes) {
     return base;
 }
 
+static uintptr_t trap_return_site(RemoteSession &s) {
+    static int trapSlot = 0;
+    const uintptr_t p = remote_session_scratch(s, 40 + (trapSlot++ % 8), 4);
+    if (!p) return 0;
+    const uint32_t brk = 0xD4200000u; // BRK #0
+    mem_write(s.pid, p, &brk, sizeof(brk));
+    return p;
+}
+
 bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uintptr_t> &args,
                          uintptr_t &ret_x0) {
     ret_x0 = 0;
@@ -103,18 +113,43 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         std::snprintf(s.err, sizeof(s.err), "session/call invalid");
         return false;
     }
+    const uintptr_t retTrap = trap_return_site(s);
+    if (!retTrap) {
+        std::snprintf(s.err, sizeof(s.err), "trap site alloc fail");
+        return false;
+    }
     struct user_pt_regs work = *saved_pt(s);
     for (size_t i = 0; i < args.size() && i < 8; ++i)
         work.regs[i] = args[i];
     work.pc = func;
-    work.regs[30] = 0;
+    work.regs[30] = retTrap;
     if (!set_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "SETREGSET fail");
         return false;
     }
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     int st = 0;
-    waitpid(s.tid, &st, 0);
+    bool gotTrap = false;
+    for (int tries = 0; tries < 32; ++tries) {
+        if (waitpid(s.tid, &st, 0) < 0) break;
+        if (!WIFSTOPPED(st)) break;
+        const int sig = WSTOPSIG(st);
+        if (sig == SIGTRAP) {
+            gotTrap = true;
+            break;
+        }
+        if (sig == SIGSEGV || sig == SIGILL || sig == SIGBUS || sig == SIGABRT) {
+            std::snprintf(s.err, sizeof(s.err), "target signal %d during call", sig);
+            set_regs(s.tid, *saved_pt(s));
+            return false;
+        }
+        ptrace(PTRACE_CONT, s.tid, nullptr, (void *)(uintptr_t)sig);
+    }
+    if (!gotTrap) {
+        std::snprintf(s.err, sizeof(s.err), "no SIGTRAP return from call");
+        set_regs(s.tid, *saved_pt(s));
+        return false;
+    }
     if (!get_regs(s.tid, work)) {
         std::snprintf(s.err, sizeof(s.err), "GETREGSET after call");
         return false;

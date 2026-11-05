@@ -105,7 +105,7 @@ static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) 
     if (!mem_read(pid, func, ins, sizeof(ins))) return false;
 
     uint64_t x[31] = {};
-    for (int i = 0; i < 28; ++i) {
+    for (int i = 0; i < 48; ++i) {
         const uint32_t w = ins[i];
         const uint32_t w2 = ins[i + 1];
         const uint64_t pc = func + (uint64_t)i * 4;
@@ -227,12 +227,16 @@ static bool domain_looks_valid(pid_t pid, uintptr_t domain) {
 static void domain_scan_bss(pid_t pid, const RemoteIl2CppInfo &lib, uintptr_t &domainOut) {
     domainOut = 0;
     if (!lib.base) return;
+    const std::string libName = lib.libBaseName[0] ? lib.libBaseName : basename(lib.libPath);
     std::vector<MapsReg> maps;
     if (!mem_maps(pid, maps)) return;
     for (const auto &m : maps) {
-        if (m.start < lib.base || m.end > lib.end + 0x200000ULL) continue;
-        if (m.path.find("liblogic") == std::string::npos && m.fileOff != 0) continue;
+        if (m.start < lib.base || m.end > lib.end + 0x400000ULL) continue;
         if (m.perms[0] != 'r' || m.perms[1] != 'w') continue;
+        const bool inModule = !m.path.empty() &&
+                              (m.path.find(libName) != std::string::npos || m.path.find("libil2cpp") != std::string::npos ||
+                               m.path.find("liblogic") != std::string::npos || m.path.empty());
+        if (!inModule && m.fileOff != 0) continue;
         const size_t sz = (size_t)(m.end - m.start);
         for (size_t off = 0; off < sz; off += 512 * sizeof(uintptr_t)) {
             uintptr_t cand = 0;
@@ -242,6 +246,10 @@ static void domain_scan_bss(pid_t pid, const RemoteIl2CppInfo &lib, uintptr_t &d
             return;
         }
     }
+}
+
+bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {
+    return domain_looks_valid(pid, domain);
 }
 
 static pid_t g_il2CachedPid = 0;
@@ -272,11 +280,12 @@ bool remote_refresh_domain_ptr(pid_t pid, RemoteIl2CppInfo &io) {
     mem_read(pid, io.sym_domain_get, ins, sizeof(ins));
     ui_log("[il2cpp] domain_get ins: %08X %08X %08X %08X", ins[0], ins[1], ins[2], ins[3]);
     domain_scan_bss(pid, io, io.domain_ptr);
-    if (io.domain_ptr) {
+    if (io.domain_ptr && domain_looks_valid(pid, io.domain_ptr)) {
         std::snprintf(io.note, sizeof(io.note), "domain* bss scan @ 0x%llx",
                       (unsigned long long)io.domain_ptr);
         return true;
     }
+    io.domain_ptr = 0;
     return false;
 }
 

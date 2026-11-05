@@ -1,6 +1,7 @@
 #include "dump_cs_engine.hpp"
 #include "Il2cpp/il2cpp-tabledefs.h"
 #include "Il2cpp/il2cpp_types_minimal.h"
+#include "mem.hpp"
 
 #include <algorithm>
 #include <cstdarg>
@@ -435,25 +436,42 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         return false;
     }
 
-    uintptr_t domain = 0;
-    if (!ctx.call0("il2cpp_domain_get", domain) || !domain) {
-        logf("ERROR: il2cpp_domain_get returned null");
+    auto domain_ok = [&](uintptr_t d) {
+        if (!mem_ptr_ok(d)) return false;
+        return ctx.domainValid ? ctx.domainValid(d) : true;
+    };
+
+    uintptr_t domain = ctx.domainHint;
+    if (domain_ok(domain) && ctx.sym("il2cpp_thread_attach")) {
+        uintptr_t thr = 0;
+        ctx.call1("il2cpp_thread_attach", domain, thr);
+        logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,
+             (unsigned long long)thr);
+    }
+
+    uintptr_t live = 0;
+    if (ctx.call0("il2cpp_domain_get", live) && domain_ok(live))
+        domain = live;
+    else if (!domain_ok(domain)) {
+        logf("ERROR: il2cpp_domain_get live=0x%llx hint=0x%llx", (unsigned long long)live,
+             (unsigned long long)ctx.domainHint);
         return false;
     }
     logf("domain=0x%llx", (unsigned long long)domain);
 
-    if (ctx.sym("il2cpp_thread_attach"))
-        ctx.call1("il2cpp_thread_attach", domain, domain);
-
     uintptr_t sizeSlot = ctx.scratch(8);
     uintptr_t assemblies = 0;
     if (!ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) || !assemblies) {
-        logf("ERROR: no assemblies");
+        logf("ERROR: no assemblies (ptr=0x%llx)", (unsigned long long)assemblies);
         return false;
     }
     size_t asmCount = 0;
     ctx.readMem(sizeSlot, &asmCount, sizeof(asmCount));
     logf("assemblies=%zu", asmCount);
+    if (asmCount == 0) {
+        logf("ERROR: assembly count 0 — game not ready or domain wrong");
+        return false;
+    }
 
     std::ofstream out(outPath, std::ios::trunc);
     if (!out.is_open()) {
@@ -521,6 +539,10 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         out.flush();
     }
     out.close();
+    if (processed == 0) {
+        logf("ERROR: wrote empty dump (0 classes)");
+        return false;
+    }
     logf("SUCCESS dump.cs classes=%d path=%s", processed, outPath.c_str());
     DumpProgress done{};
     done.progress = 1.f;

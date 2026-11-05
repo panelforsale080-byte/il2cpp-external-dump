@@ -8,7 +8,9 @@ struct DumpCtx {
     pid_t pid = 0;
     uintptr_t il2cppBase = 0;
     uintptr_t il2cppEnd = 0;
+    uintptr_t domainHint = 0;
     std::string libName;
+    std::function<bool(uintptr_t domain)> domainValid;
 
     std::function<uintptr_t(const char *sym)> sym;
     /** a1 may be in-out iter pointer or out-parameter buffer in target address space. */
