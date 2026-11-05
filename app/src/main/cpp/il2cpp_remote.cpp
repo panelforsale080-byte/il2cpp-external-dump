@@ -278,5 +278,6 @@ bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::strin
         metadata_dump_run(pid, info.base, metaRemote, metaSize, outPath, targetCmdline, log,
                           progress))
         return true;
-    return run_dump_runtime(outPath, targetCmdline, log, progress);
+    if (log) log("ERROR: metadata dump failed (ptrace runtime disabled — use global-metadata)");
+    return false;
 }

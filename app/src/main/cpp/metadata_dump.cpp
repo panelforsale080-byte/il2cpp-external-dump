@@ -76,6 +76,14 @@ struct MetaHeader {
     int32_t attributesInfoCount;
     int32_t attributeTypesOffset;
     int32_t attributeTypesCount;
+    int32_t unresolvedVirtualCallParameterTypesOffset;
+    int32_t unresolvedVirtualCallParameterTypesCount;
+    int32_t unresolvedVirtualCallParameterRangesOffset;
+    int32_t unresolvedVirtualCallParameterRangesCount;
+    int32_t windowsRuntimeTypeNamesOffset;
+    int32_t windowsRuntimeTypeNamesSize;
+    int32_t exportedTypeDefinitionsOffset;
+    int32_t exportedTypeDefinitionsCount;
     int32_t typesOffset;
     int32_t typesCount;
 };
@@ -161,12 +169,35 @@ static size_t g_meta_file_header_off = 0;
 
 static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector<uint8_t> &fileCopy);
 
-static bool validate_meta_header(const MetaHeader &h) {
+static void log_header_reject(const MetaHeader &h, size_t blobLen, const char *why) {
+    ui_log("[metadata] header reject (%s) v=%d types=%d tdo=%d imgs=%d blob=%zu", why, h.version,
+           h.typeDefinitionsCount, h.typeDefinitionsOffset, h.imagesCount, blobLen);
+}
+
+static bool validate_meta_header(const MetaHeader &h, size_t blobLen = 0) {
     if (h.sanity != (int32_t)kMetaSanity) return false;
-    if (h.version < 16 || h.version > 999) return false;
+    if (h.version < 1 || h.version > 999) return false;
     if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 500000) return false;
-    if (h.imagesCount < 0 || h.imagesCount > 8192) return false;
+    if (h.typeDefinitionsOffset <= 0) return false;
+    if (blobLen > 0) {
+        if ((size_t)h.typeDefinitionsOffset >= blobLen) return false;
+        if (h.stringOffset > 0 && (size_t)h.stringOffset >= blobLen) return false;
+    }
+    if (h.imagesCount < 0 || h.imagesCount > 65535) return false;
     return true;
+}
+
+static bool try_accept_header_at(const uint8_t *data, size_t len, size_t off, size_t &offOut) {
+    if (off + sizeof(MetaHeader) > len) return false;
+    MetaHeader h{};
+    std::memcpy(&h, data + off, sizeof(h));
+    if (h.sanity != (int32_t)kMetaSanity) return false;
+    if (validate_meta_header(h, len)) {
+        offOut = off;
+        return true;
+    }
+    if (off == 0) log_header_reject(h, len, "strict");
+    return false;
 }
 
 static bool try_metadata_from_file_paths(pid_t pid, const std::string &mapPath, uintptr_t &metaRemote,
@@ -197,14 +228,11 @@ static bool try_metadata_from_file_paths(pid_t pid, const std::string &mapPath, 
 static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOut) {
     offOut = 0;
     if (len < sizeof(MetaHeader)) return false;
+    if (try_accept_header_at(data, len, 0, offOut)) return true;
     const size_t step = 4096;
-    for (size_t off = 0; off + sizeof(MetaHeader) <= len; off += step) {
+    for (size_t off = step; off + sizeof(MetaHeader) <= len; off += step) {
         for (size_t i = off; i + sizeof(MetaHeader) <= len && i < off + step + 4096; i += 4) {
-            MetaHeader h{};
-            std::memcpy(&h, data + i, sizeof(h));
-            if (!validate_meta_header(h)) continue;
-            offOut = i;
-            return true;
+            if (try_accept_header_at(data, len, i, offOut)) return true;
         }
     }
     return false;
@@ -235,7 +263,7 @@ static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector
     if (!f) return false;
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
-    if (sz <= (long)sizeof(MetaHeader) || sz > 96 * 1024 * 1024) {
+    if (sz <= (long)sizeof(MetaHeader) || sz > 128 * 1024 * 1024) {
         std::fclose(f);
         return false;
     }
@@ -257,7 +285,7 @@ static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector
 }
 
 static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaRemote) {
-    const size_t len = std::min((size_t)(m.end - m.start), size_t(48 * 1024 * 1024));
+    const size_t len = std::min((size_t)(m.end - m.start), size_t(128 * 1024 * 1024));
     g_meta_file_cache.assign(len, 0);
     if (!mem_read(pid, m.start, g_meta_file_cache.data(), len)) {
         ui_log("[metadata] mem_read failed map=0x%llx len=%zu", (unsigned long long)m.start, len);
@@ -265,9 +293,10 @@ static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaR
     }
     size_t off = 0;
     if (!scan_bytes_for_header(g_meta_file_cache.data(), len, off)) {
-        int32_t sanity = 0;
-        std::memcpy(&sanity, g_meta_file_cache.data(), 4);
-        ui_log("[metadata] no header in map (magic=%08x len=%zu)", (unsigned) sanity, len);
+        MetaHeader peek{};
+        if (len >= sizeof(peek)) std::memcpy(&peek, g_meta_file_cache.data(), sizeof(peek));
+        ui_log("[metadata] no header in map (magic=%08x len=%zu)", (unsigned)peek.sanity, len);
+        if (peek.sanity == (int32_t)kMetaSanity) log_header_reject(peek, len, "map");
         g_meta_file_cache.clear();
         return false;
     }
