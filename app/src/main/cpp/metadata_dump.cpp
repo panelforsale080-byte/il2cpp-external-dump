@@ -158,9 +158,9 @@ static int64_t meta_now_ms() {
 
 static bool validate_meta_header(const MetaHeader &h) {
     if (h.sanity != (int32_t)kMetaSanity) return false;
-    if (h.version < 16 || h.version > 35) return false;
+    if (h.version < 16 || h.version > 39) return false;
     if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 200000) return false;
-    if (h.imagesCount <= 0 || h.imagesCount > 4096) return false;
+    if (h.imagesCount < 0 || h.imagesCount > 4096) return false;
     return true;
 }
 
@@ -228,6 +228,30 @@ static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector
 
 static std::vector<uint8_t> g_meta_file_cache;
 static size_t g_meta_file_header_off = 0;
+
+static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaRemote) {
+    const size_t len = std::min((size_t)(m.end - m.start), size_t(48 * 1024 * 1024));
+    g_meta_file_cache.assign(len, 0);
+    if (!mem_read(pid, m.start, g_meta_file_cache.data(), len)) {
+        ui_log("[metadata] mem_read failed map=0x%llx len=%zu", (unsigned long long)m.start, len);
+        return false;
+    }
+    size_t off = 0;
+    if (!scan_bytes_for_header(g_meta_file_cache.data(), len, off)) {
+        int32_t sanity = 0;
+        std::memcpy(&sanity, g_meta_file_cache.data(), 4);
+        ui_log("[metadata] no header in map (magic=%08x len=%zu)", (unsigned) sanity, len);
+        g_meta_file_cache.clear();
+        return false;
+    }
+    g_meta_file_header_off = off;
+    metaRemote = m.start + off;
+    MetaHeader hdr{};
+    std::memcpy(&hdr, g_meta_file_cache.data() + off, sizeof(hdr));
+    ui_log("[metadata] loaded from map +0x%zx v=%d types=%d", off, hdr.version,
+           hdr.typeDefinitionsCount);
+    return true;
+}
 
 static bool load_meta_view(pid_t pid, uintptr_t remote, MetaView &out);
 
@@ -412,7 +436,7 @@ static int map_scan_priority(const MapsReg &m, uintptr_t il2cppBase) {
     const size_t len = (size_t)(m.end - m.start);
     if (len < 32768) return 0;
     if (m.path.find("global-metadata") != std::string::npos) return 100;
-    if (m.path.find("il2cpp") != std::string::npos) return 95;
+    if (m.path.find("libil2cpp.so") != std::string::npos) return 95;
     if (il2cppBase && m.start <= il2cppBase && m.end > il2cppBase) return 90;
     if (m.path.empty() && len >= 512 * 1024 && len <= 32 * 1024 * 1024) return 70;
     if (m.path.find(".apk") != std::string::npos && len <= 24 * 1024 * 1024) return 50;
@@ -428,6 +452,26 @@ bool metadata_find(pid_t pid, uintptr_t il2cppBase, const char *libPathHint, uin
 
     std::vector<MapsReg> maps;
     if (!mem_maps(pid, maps)) return false;
+
+    for (const auto &m : maps) {
+        if (m.path.find("global-metadata") == std::string::npos) continue;
+        ui_log("[metadata] GSpace/conRent cache: %s", m.path.c_str());
+        uintptr_t found = 0;
+        if (load_metadata_from_map(pid, m, found)) {
+            metaRemote = found;
+            metaSize = g_meta_file_cache.size() - g_meta_file_header_off;
+            ui_log("[metadata] FAB11BAF @ 0x%llx (global-metadata.dat)", (unsigned long long)found);
+            return true;
+        }
+        uintptr_t fileOff = 0;
+        if (scan_file_path(m.path.c_str(), fileOff, g_meta_file_cache)) {
+            g_meta_file_header_off = fileOff;
+            metaRemote = fileOff;
+            metaSize = g_meta_file_cache.size() - fileOff;
+            ui_log("[metadata] FAB11BAF from path file");
+            return true;
+        }
+    }
 
     std::vector<std::pair<int, const MapsReg *>> ranked;
     for (const auto &m : maps) {

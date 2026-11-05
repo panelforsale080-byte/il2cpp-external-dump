@@ -157,10 +157,9 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
         g_dumpRunning.store(false);
         return;
     }
-    ui_log("[il2cpp] OK lib=%s base=0x%llx", il2.libBaseName, (unsigned long long)il2.base);
     if (il2.note[0]) ui_log("[il2cpp] %s", il2.note);
 
-    ui_log("[dump] searching global-metadata (conRent / Il2CppDumper style)…");
+    ui_log("[dump] searching global-metadata (conRent uses live domain_get; external reads metadata)…");
     uintptr_t metaRemote = 0;
     size_t metaSize = 0;
     auto logFn = [](const char *msg) { ui_log("%s", msg); };
@@ -174,7 +173,8 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
         return;
     }
 
-    ui_log("[dump] metadata path failed — ptrace runtime APIs (often SIGSEGV on Unity)…");
+    ui_log("[dump] metadata not loaded — ptrace APIs unreliable (conRent/mlbb use in-game IL2CPP)");
+    ui_log("[dump] tip: open game first so global-metadata.dat is mapped (GSpace il2cpp/Metadata/)");
     RemoteIl2CppExecutor ex{};
     ex.pid = pid;
     ex.info = il2;
