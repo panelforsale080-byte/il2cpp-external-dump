@@ -442,7 +442,17 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         return ctx.domainValid ? ctx.domainValid(d) : true;
     };
 
+    const bool liblogic =
+        ctx.libName.find("logic") != std::string::npos || ctx.libName.find("Logic") != std::string::npos;
+
     uintptr_t domain = remote_il2cpp_normalize_domain(ctx.pid, ctx.domainHint);
+    if (liblogic) {
+        uintptr_t live = 0;
+        if (ctx.call0("il2cpp_domain_get", live) && domain_ok(live)) {
+            logf("live domain_get -> 0x%llx", (unsigned long long)live);
+            domain = live;
+        }
+    }
     if (!domain_ok(domain)) {
         uintptr_t live = 0;
         const bool liveOk = ctx.call0("il2cpp_domain_get", live);
@@ -454,8 +464,6 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         return false;
     }
 
-    const bool liblogic =
-        ctx.libName.find("logic") != std::string::npos || ctx.libName.find("Logic") != std::string::npos;
     logf("domain=0x%llx liblogic=%d", (unsigned long long)domain, liblogic ? 1 : 0);
 
     uintptr_t sizeSlot = ctx.scratch(8);
@@ -463,6 +471,12 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
     size_t asmCount = 0;
     if (remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
         logf("assemblies from memory (mlbb-pure / conRent) count=%zu", asmCount);
+    else if (liblogic) {
+        uint8_t peek[64] = {};
+        ctx.readMem(domain, peek, sizeof(peek));
+        logf("domain mem peek: %02x%02x%02x%02x… (no assembly pair yet)",
+             peek[0], peek[1], peek[2], peek[3]);
+    }
     if (asmCount == 0) {
         if (!liblogic && ctx.sym("il2cpp_thread_attach")) {
             uintptr_t thr = 0;

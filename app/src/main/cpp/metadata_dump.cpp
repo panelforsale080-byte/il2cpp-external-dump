@@ -597,17 +597,22 @@ static bool metadata_scan_runtime_decrypted(pid_t pid, uintptr_t il2cppBase, uin
         const MapsReg *m;
     };
     std::vector<Ranked> ranked;
+    constexpr size_t kMlbbMetaSizeHint = 4755456;
     for (const auto &m : maps) {
         if (m.perms[0] != 'r') continue;
         const size_t len = (size_t)(m.end - m.start);
         if (len < 768 * 1024 || len > 48 * 1024 * 1024) continue;
         if (m.path.find("global-metadata") != std::string::npos) continue;
         if (m.path.find(".so") != std::string::npos) continue;
+        const std::string &p = m.path;
+        if (p.find("stack") != std::string::npos || p.find("tls") != std::string::npos) continue;
+        if (p.find(".bss") != std::string::npos && len < 3 * 1024 * 1024) continue;
         int pri = 0;
-        if (m.path.empty() || m.path.find("[anon") != std::string::npos) pri += 70;
-        if (m.path.find("dalvik") != std::string::npos) pri += 40;
-        if (il2cppBase && m.start >= il2cppBase && m.start <= il2cppBase + 0x10000000ULL) pri += 50;
-        if (il2cppBase && m.end >= il2cppBase && m.start <= il2cppBase + 0x20000000ULL) pri += 30;
+        if (p.empty() || p.find("[anon") != std::string::npos) pri += 50;
+        if (p.find("dalvik") != std::string::npos && p.find("stack") == std::string::npos) pri += 30;
+        if (len >= 3 * 1024 * 1024 && len <= 8 * 1024 * 1024) pri += 90;
+        const int64_t d = (int64_t)len - (int64_t)kMlbbMetaSizeHint;
+        if (d >= -512 * 1024 && d <= 512 * 1024) pri += 120;
         if (pri == 0) continue;
         ranked.push_back({pri, &m});
     }
@@ -615,13 +620,13 @@ static bool metadata_scan_runtime_decrypted(pid_t pid, uintptr_t il2cppBase, uin
               [](const Ranked &a, const Ranked &b) { return a.pri > b.pri; });
     ui_log("[metadata] runtime decrypted scan (%zu maps, conRent-style in-memory metadata)…",
            ranked.size());
-    const int64_t deadline = meta_now_ms() + 12000;
+    const int64_t deadline = meta_now_ms() + 20000;
     int n = 0;
     for (const auto &e : ranked) {
         if (meta_now_ms() > deadline) break;
         const MapsReg &m = *e.m;
         ++n;
-        if (n <= 4) ui_log("[metadata] runtime #%d pri=%d %s", n, e.pri,
+        if (n <= 8) ui_log("[metadata] runtime #%d pri=%d %s", n, e.pri,
                             m.path.empty() ? "[anon]" : m.path.c_str());
         uintptr_t found = 0;
         const size_t len = (size_t)(m.end - m.start);
@@ -1076,6 +1081,7 @@ bool metadata_find(pid_t pid, uintptr_t il2cppBase, const char *libPathHint, uin
         }
     }
 
+    ui_log("[metadata] ELF s_GlobalMetadata on lib base 0x%llx…", (unsigned long long)il2cppBase);
     if (metadata_find_elf_global(pid, il2cppBase, metaRemote, metaSize)) return true;
     if (metadata_scan_il2cpp_data_pointers(pid, libPathHint, il2cppBase, metaRemote, metaSize))
         return true;

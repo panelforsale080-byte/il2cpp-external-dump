@@ -364,6 +364,17 @@ uintptr_t remote_il2cpp_normalize_domain(pid_t pid, uintptr_t domain) {
     return domain;
 }
 
+static bool assemblies_pair_valid(pid_t pid, uintptr_t arr, size_t n) {
+    if (!mem_ptr_ok(arr) || n < 2 || n > 4096) return false;
+    const size_t check = std::min(n, size_t(8));
+    for (size_t i = 0; i < check; ++i) {
+        uintptr_t asmPtr = 0;
+        if (!mem_read(pid, arr + i * sizeof(uintptr_t), asmPtr) || !mem_ptr_ok(asmPtr))
+            return false;
+    }
+    return true;
+}
+
 bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &assembliesOut,
                                        size_t &countOut) {
     assembliesOut = 0;
@@ -371,24 +382,35 @@ bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &a
     if (!mem_ptr_ok(domain)) return false;
 
     auto try_pair = [&](uintptr_t base) -> bool {
-        for (size_t off = 0; off + 16 <= 0x120; off += 8) {
+        for (size_t off = 0; off + 16 <= 0x400; off += 8) {
             uintptr_t arr = 0;
             size_t n = 0;
             if (!mem_read(pid, base + off, arr)) continue;
             if (!mem_read(pid, base + off + 8, &n, sizeof(n))) continue;
-            if (!mem_ptr_ok(arr) || n < 2 || n > 600) continue;
-            uintptr_t asm0 = 0;
-            if (!mem_read(pid, arr, asm0) || !mem_ptr_ok(asm0)) continue;
-            assembliesOut = arr;
-            countOut = n;
-            return true;
+            if (assemblies_pair_valid(pid, arr, n)) {
+                assembliesOut = arr;
+                countOut = n;
+                return true;
+            }
+            uint32_t n32 = 0;
+            if (!mem_read(pid, base + off + 8, &n32, sizeof(n32))) continue;
+            n = n32;
+            if (assemblies_pair_valid(pid, arr, n)) {
+                assembliesOut = arr;
+                countOut = n;
+                return true;
+            }
         }
         return false;
     };
 
     if (try_pair(domain)) return true;
-    uintptr_t app = 0;
-    if (mem_read(pid, domain, app) && mem_ptr_ok(app) && try_pair(app)) return true;
+    for (int deref = 0; deref < 3; ++deref) {
+        uintptr_t next = 0;
+        if (!mem_read(pid, domain, next) || !mem_ptr_ok(next)) break;
+        domain = next;
+        if (try_pair(domain)) return true;
+    }
     return false;
 }
 
