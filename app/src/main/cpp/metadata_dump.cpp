@@ -347,6 +347,143 @@ static bool meta_view_init_from_blob(MetaView &v) {
     return meta_view_apply_legacy(v, h);
 }
 
+static bool try_decrypt_il2cpp_encrypt(std::vector<uint8_t> &buf) {
+    if (buf.size() < 1028 + 64u * 4u) return false;
+    uint32_t kl_field = 0;
+    std::memcpy(&kl_field, buf.data() + 1024, sizeof(kl_field));
+    const uint32_t kl = kl_field & 0xffffu;
+    if (kl < 64 || kl > 512) return false;
+    const size_t key_off = 1028;
+    const size_t payload_off = key_off + (size_t)kl * 4u;
+    if (buf.size() <= payload_off + 64) return false;
+    auto *keys = reinterpret_cast<uint32_t *>(buf.data() + key_off);
+    auto *enc = reinterpret_cast<uint32_t *>(buf.data() + payload_off);
+    const size_t nwords = (buf.size() - payload_off) / 4;
+    if (nwords == 0) return false;
+    for (size_t i = 0; i < nwords; ++i) {
+        const size_t key_index = kl ? (i + (i / kl)) % kl : 0;
+        enc[i] ^= keys[key_index];
+    }
+    std::vector<uint8_t> merged;
+    merged.resize(1024 + (buf.size() - payload_off));
+    std::memcpy(merged.data(), buf.data(), 1024);
+    std::memcpy(merged.data() + 1024, buf.data() + payload_off, buf.size() - payload_off);
+    buf.swap(merged);
+    ui_log("[metadata] Il2CppEncrypt decrypt kl=%u out=%zu", kl, buf.size());
+    return true;
+}
+
+static bool try_decrypt_mlbb_legacy(std::vector<uint8_t> &buf) {
+    if (buf.size() < 512) return false;
+    uint32_t magic = 0;
+    std::memcpy(&magic, buf.data(), sizeof(magic));
+    if (magic != 0xA28C4102u) return false;
+    magic = kMetaSanity;
+    std::memcpy(buf.data(), &magic, sizeof(magic));
+    auto xor_range = [&](size_t off, size_t len) {
+        for (size_t i = off; i < off + len && i < buf.size(); ++i) buf[i] ^= 0xC3;
+    };
+    xor_range(4, 268);
+    for (int i = 0; i < 0x30; i += 8) {
+        int32_t block_off = 0, block_len = 0;
+        std::memcpy(&block_off, buf.data() + (size_t)i + 8, 4);
+        std::memcpy(&block_len, buf.data() + (size_t)i + 12, 4);
+        if (block_off <= 0 || block_len <= 0) continue;
+        if ((size_t)block_off + (size_t)block_len > buf.size()) continue;
+        xor_range((size_t)block_off, (size_t)block_len);
+    }
+    ui_log("[metadata] MLBB legacy decrypt (0xA28C4102 → FAB11BAF)");
+    return true;
+}
+
+static bool metadata_try_decrypt_file(std::vector<uint8_t> &buf) {
+    if (buf.size() < 8) return false;
+    MetaView probe{};
+    probe.blob = buf;
+    if (meta_view_init_from_blob(probe)) return false;
+
+    uint32_t sanity = 0;
+    int32_t version = 0;
+    std::memcpy(&sanity, buf.data(), sizeof(sanity));
+    std::memcpy(&version, buf.data() + 4, sizeof(version));
+    const bool encrypted_hint =
+        sanity == kMetaSanity && (version == 1024 || version > 31 || (version > 0 && version < 16));
+
+    if (encrypted_hint) {
+        ui_log("[metadata] encrypted global-metadata (v=%d) — Il2CppEncrypt / MLBB decrypt", version);
+        std::vector<uint8_t> copy = buf;
+        if (try_decrypt_il2cpp_encrypt(copy)) {
+            size_t hdr_off = 0;
+            if (scan_bytes_for_header(copy.data(), copy.size(), hdr_off) && hdr_off > 0)
+                copy.erase(copy.begin(), copy.begin() + (ptrdiff_t)hdr_off);
+            probe.blob = copy;
+            if (meta_view_init_from_blob(probe)) {
+                buf.swap(copy);
+                return true;
+            }
+        }
+    }
+    std::vector<uint8_t> copy = buf;
+    if (try_decrypt_mlbb_legacy(copy)) {
+        probe.blob = copy;
+        if (meta_view_init_from_blob(probe)) {
+            buf.swap(copy);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool metadata_scan_runtime_decrypted(pid_t pid, uintptr_t il2cppBase, uintptr_t &metaRemote,
+                                            size_t &metaSize) {
+    std::vector<MapsReg> maps;
+    if (!mem_maps(pid, maps)) return false;
+    struct Ranked {
+        int pri;
+        const MapsReg *m;
+    };
+    std::vector<Ranked> ranked;
+    for (const auto &m : maps) {
+        if (m.perms[0] != 'r') continue;
+        const size_t len = (size_t)(m.end - m.start);
+        if (len < 768 * 1024 || len > 48 * 1024 * 1024) continue;
+        if (m.path.find("global-metadata") != std::string::npos) continue;
+        int pri = 0;
+        if (m.path.empty()) pri += 60;
+        if (il2cppBase && m.start <= il2cppBase + 0x8000000ULL && m.end >= il2cppBase) pri += 50;
+        if (m.path.find("liblogic") != std::string::npos ||
+            m.path.find("libil2cpp") != std::string::npos)
+            pri += 30;
+        if (pri == 0) continue;
+        ranked.push_back({pri, &m});
+    }
+    std::sort(ranked.begin(), ranked.end(),
+              [](const Ranked &a, const Ranked &b) { return a.pri > b.pri; });
+    ui_log("[metadata] runtime decrypted scan (%zu maps, conRent-style in-memory metadata)…",
+           ranked.size());
+    const int64_t deadline = meta_now_ms() + 12000;
+    int n = 0;
+    for (const auto &e : ranked) {
+        if (meta_now_ms() > deadline) break;
+        const MapsReg &m = *e.m;
+        ++n;
+        if (n <= 4) ui_log("[metadata] runtime #%d pri=%d %s", n, e.pri,
+                            m.path.empty() ? "[anon]" : m.path.c_str());
+        uintptr_t found = 0;
+        const size_t len = (size_t)(m.end - m.start);
+        if (!scan_region(pid, m.start, len, found)) continue;
+        g_meta_file_cache.clear();
+        g_meta_file_header_off = 0;
+        if (!load_metadata_from_map(pid, m, found)) continue;
+        metaRemote = found;
+        metaSize = g_meta_file_cache.size() - g_meta_file_header_off;
+        ui_log("[metadata] decrypted metadata @ 0x%llx (%s)", (unsigned long long)found,
+               m.path.empty() ? "anon" : m.path.c_str());
+        return true;
+    }
+    return false;
+}
+
 static bool try_accept_header_at(const uint8_t *data, size_t len, size_t off, size_t &offOut) {
     if (off + 8 > len) return false;
     uint32_t sanity = 0;
@@ -357,7 +494,8 @@ static bool try_accept_header_at(const uint8_t *data, size_t len, size_t off, si
     MetaView tmp{};
     tmp.blob.assign(data + off, data + len);
     if (!meta_view_init_from_blob(tmp)) {
-        if (off == 0 && version >= 29 && len >= kMetaHeaderV29Size) {
+        if (off == 0 && sanity == kMetaSanity && version != 1024 && version >= 29 &&
+            len >= kMetaHeaderV29Size) {
             MetaHeaderV29 h{};
             std::memcpy(&h, data + off, sizeof(h));
             log_header_reject_v29(h, len, "v29");
@@ -446,8 +584,11 @@ static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector
     std::fclose(f);
     size_t off = 0;
     if (!scan_bytes_for_header(fileCopy.data(), fileCopy.size(), off)) {
-        fileCopy.clear();
-        return false;
+        if (!metadata_try_decrypt_file(fileCopy) ||
+            !scan_bytes_for_header(fileCopy.data(), fileCopy.size(), off)) {
+            fileCopy.clear();
+            return false;
+        }
     }
     foundRemote = off;
     return true;
@@ -462,16 +603,25 @@ static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaR
     }
     size_t off = 0;
     if (!scan_bytes_for_header(g_meta_file_cache.data(), len, off)) {
-        uint32_t sanity = 0;
-        if (len >= 4) std::memcpy(&sanity, g_meta_file_cache.data(), 4);
-        ui_log("[metadata] no header in map (magic=%08x len=%zu)", sanity, len);
-        if (sanity == kMetaSanity && len >= kMetaHeaderV29Size) {
-            MetaHeaderV29 peek{};
-            std::memcpy(&peek, g_meta_file_cache.data(), sizeof(peek));
-            log_header_reject_v29(peek, len, "map");
+        if (metadata_try_decrypt_file(g_meta_file_cache) &&
+            scan_bytes_for_header(g_meta_file_cache.data(), g_meta_file_cache.size(), off)) {
+            ui_log("[metadata] decrypted disk metadata in map buffer");
+        } else {
+            uint32_t sanity = 0;
+            int32_t version = 0;
+            if (len >= 8) {
+                std::memcpy(&sanity, g_meta_file_cache.data(), 4);
+                std::memcpy(&version, g_meta_file_cache.data() + 4, 4);
+            }
+            ui_log("[metadata] no header in map (magic=%08x v=%d len=%zu)", sanity, version, len);
+            if (sanity == kMetaSanity && version != 1024 && len >= kMetaHeaderV29Size) {
+                MetaHeaderV29 peek{};
+                std::memcpy(&peek, g_meta_file_cache.data(), sizeof(peek));
+                log_header_reject_v29(peek, len, "map");
+            }
+            g_meta_file_cache.clear();
+            return false;
         }
-        g_meta_file_cache.clear();
-        return false;
     }
     g_meta_file_header_off = off;
     metaRemote = m.start + off;
@@ -527,9 +677,10 @@ static std::string type_def_name(const MetaView &v, int32_t typeDefIndex) {
         (size_t)v.typeDefinitionsOffset + (size_t)typeDefIndex * v.typeDefStride;
     if (tdOff + v.typeDefStride > v.blob.size()) return "object";
     TypeDefV29 td{};
-    std::memcpy(&td, v.blob.data() + tdOff, sizeof(td));
-    const std::string ns = read_meta_string(v, td.namespaceIndex);
-    const std::string nm = read_meta_string(v, td.nameIndex);
+    const size_t cp = std::min(v.typeDefStride, sizeof(td));
+    std::memcpy(&td, v.blob.data() + tdOff, cp);
+    const std::string ns = read_meta_string(v, (int32_t)td.namespaceIndex);
+    const std::string nm = read_meta_string(v, (int32_t)td.nameIndex);
     if (nm.empty()) return "object";
     return ns.empty() ? nm : ns + "." + nm;
 }
@@ -774,7 +925,10 @@ bool metadata_find(pid_t pid, uintptr_t il2cppBase, const char *libPathHint, uin
         }
     }
 
+    if (metadata_scan_runtime_decrypted(pid, il2cppBase, metaRemote, metaSize)) return true;
+
     ui_log("[metadata] not found (%d maps scanned)", scanned);
+    ui_log("[metadata] MLBB: keep game in match/menu so liblogic loads decrypted metadata");
     return false;
 }
 
