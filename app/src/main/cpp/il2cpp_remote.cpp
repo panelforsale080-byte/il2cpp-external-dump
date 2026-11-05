@@ -178,9 +178,6 @@ bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::strin
     ctx.call2 = [this](const char *n, uintptr_t a0, uintptr_t a1, uintptr_t &r) {
         return call2(n, a0, a1, r);
     };
-    ctx.call2Out = [this](const char *n, uintptr_t a0, uintptr_t out, uintptr_t &r) {
-        return call2_out(n, a0, out, r);
-    };
     ctx.scratch = [this](size_t b) { return scratch(b); };
     ctx.readCstr = [this](uintptr_t remote, std::string &o) { return read_cstr(remote, o); };
     ctx.readMem = [this](uintptr_t remote, void *buf, size_t n) {

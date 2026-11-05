@@ -176,7 +176,7 @@ static std::string method_signature(DumpCtx &ctx, uintptr_t method) {
     std::stringstream out;
     uintptr_t iflagsSlot = ctx.scratch(8);
     uintptr_t flagsRet = 0;
-    ctx.call2Out("il2cpp_method_get_flags", method, iflagsSlot, flagsRet);
+    ctx.call2("il2cpp_method_get_flags", method, iflagsSlot, flagsRet);
     uint32_t iflags = 0;
     ctx.readMem(iflagsSlot, &iflags, sizeof(iflags));
     out << method_modifier((uint32_t)flagsRet);
@@ -261,7 +261,7 @@ static std::string dump_properties(DumpCtx &ctx, uintptr_t klass) {
         if (get) {
             uintptr_t iflagsSlot = ctx.scratch(8);
             uintptr_t flagsRet = 0;
-            ctx.call2Out("il2cpp_method_get_flags", get, iflagsSlot, flagsRet);
+            ctx.call2("il2cpp_method_get_flags", get, iflagsSlot, flagsRet);
             out << method_modifier((uint32_t)flagsRet);
             uintptr_t rt = 0;
             ctx.call1("il2cpp_method_get_return_type", get, rt);
@@ -270,7 +270,7 @@ static std::string dump_properties(DumpCtx &ctx, uintptr_t klass) {
         } else if (set) {
             uintptr_t iflagsSlot = ctx.scratch(8);
             uintptr_t flagsRet = 0;
-            ctx.call2Out("il2cpp_method_get_flags", set, iflagsSlot, flagsRet);
+            ctx.call2("il2cpp_method_get_flags", set, iflagsSlot, flagsRet);
             out << method_modifier((uint32_t)flagsRet);
             uintptr_t param = 0;
             ctx.call2("il2cpp_method_get_param", set, (uintptr_t)0, param);
@@ -447,7 +447,7 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
 
     uintptr_t sizeSlot = ctx.scratch(8);
     uintptr_t assemblies = 0;
-    if (!ctx.call2Out("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) || !assemblies) {
+    if (!ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) || !assemblies) {
         logf("ERROR: no assemblies");
         return false;
     }

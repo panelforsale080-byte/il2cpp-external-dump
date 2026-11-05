@@ -11,8 +11,8 @@ struct DumpCtx {
     std::string libName;
 
     std::function<uintptr_t(const char *sym)> sym;
+    /** a1 may be in-out iter pointer or out-parameter buffer in target address space. */
     std::function<bool(const char *name, uintptr_t a0, uintptr_t a1, uintptr_t &ret)> call2;
-    std::function<bool(const char *name, uintptr_t a0, uintptr_t a1, uintptr_t outRemote, uintptr_t &ret)> call2Out;
     std::function<bool(const char *name, uintptr_t a0, uintptr_t &ret)> call1;
     std::function<bool(const char *name, uintptr_t &ret)> call0;
     std::function<uintptr_t(size_t bytes)> scratch;
