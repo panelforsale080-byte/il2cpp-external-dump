@@ -131,12 +131,6 @@ uintptr_t remote_session_scratch(RemoteSession &s, int slot, size_t bytes) {
     return base;
 }
 
-static int64_t now_ms_monotonic() {
-    struct timespec ts {};
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
 /** Wait for tracee stop; returns false on timeout (restores saved regs). */
 static bool wait_tracee_stop(RemoteSession &s, int &st, int timeoutMs) {
     const int64_t deadline = now_ms_monotonic() + timeoutMs;
