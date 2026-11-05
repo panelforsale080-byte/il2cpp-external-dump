@@ -156,6 +156,11 @@ static int64_t meta_now_ms() {
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
+static std::vector<uint8_t> g_meta_file_cache;
+static size_t g_meta_file_header_off = 0;
+
+static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector<uint8_t> &fileCopy);
+
 static bool validate_meta_header(const MetaHeader &h) {
     if (h.sanity != (int32_t)kMetaSanity) return false;
     if (h.version < 16 || h.version > 999) return false;
@@ -250,9 +255,6 @@ static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector
     foundRemote = off;
     return true;
 }
-
-static std::vector<uint8_t> g_meta_file_cache;
-static size_t g_meta_file_header_off = 0;
 
 static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaRemote) {
     const size_t len = std::min((size_t)(m.end - m.start), size_t(48 * 1024 * 1024));
