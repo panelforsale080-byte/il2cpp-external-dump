@@ -403,13 +403,13 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
         for (uint32_t t = 0; t < id.typeCount; ++t) {
             const int typeIdx = id.typeStart + (int32_t)t;
             if (typeIdx < 0 || typeIdx >= v.hdr.typeDefinitionsCount) continue;
-            out << dump_type_block(v, typeIdx, out);
+            out << dump_type_block(v, typeIdx);
             ++processed;
             if (progress && (processed % 50 == 0)) {
                 DumpProgress pr{};
                 pr.progress = total > 0 ? (float)processed / (float)total : 0.f;
                 pr.totalClasses = total;
-                pr.currentClassIndex = processed;
+                pr.currentClass = processed;
                 progress(pr);
             }
         }
@@ -425,7 +425,7 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
         DumpProgress done{};
         done.progress = 1.f;
         done.totalClasses = processed;
-        done.currentClassIndex = processed;
+        done.currentClass = processed;
         progress(done);
     }
     return true;
