@@ -12,9 +12,13 @@ class RemoteIl2CppExecutor {
     RemoteIl2CppInfo info{};
 
     bool open(pid_t target, char *err, size_t errCap);
+    /** Ptrace attach + resolve symbols only (info may be pre-filled from remote_detect_il2cpp). */
+    bool open_attach_only(pid_t target, char *err, size_t errCap);
     void close();
     bool run_dump(const std::string &outPath, const std::string &targetCmdline, DumpLogFn log,
                   DumpProgressFn progress);
+    bool run_dump_runtime(const std::string &outPath, const std::string &targetCmdline, DumpLogFn log,
+                          DumpProgressFn progress);
 
   private:
     RemoteSession session_{};

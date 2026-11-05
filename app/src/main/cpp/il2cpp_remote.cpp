@@ -212,6 +212,31 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
     return true;
 }
 
+bool RemoteIl2CppExecutor::open_attach_only(pid_t target, char *err, size_t errCap) {
+    close();
+    pid = target;
+    if (!info.sym_domain_get) {
+        if (!remote_detect_il2cpp(pid, info)) {
+            std::snprintf(err, errCap, "no IL2CPP module (il2cpp_domain_get export)");
+            return false;
+        }
+        if (!info.domain_ptr || !remote_il2cpp_domain_valid(pid, info.domain_ptr))
+            remote_refresh_domain_ptr(pid, info);
+        info.domain_ptr = remote_il2cpp_normalize_domain(pid, info.domain_ptr);
+    }
+    if (!remote_session_begin(pid, session_)) {
+        std::snprintf(err, errCap, "%s", session_.err);
+        return false;
+    }
+    sessionOpen_ = true;
+    scratchSlot_ = 0;
+    if (!resolve_syms(err, errCap)) {
+        close();
+        return false;
+    }
+    return true;
+}
+
 void RemoteIl2CppExecutor::close() {
     if (sessionOpen_) {
         remote_session_end(session_);
@@ -221,18 +246,9 @@ void RemoteIl2CppExecutor::close() {
     sym_.clear();
 }
 
-bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::string &targetCmdline,
-                                      DumpLogFn log, DumpProgressFn progress) {
-    uintptr_t metaRemote = 0;
-    size_t metaSize = 0;
-    if (metadata_find(pid, info.base, metaRemote, metaSize)) {
-        ui_log("[dump] conRent/Il2CppDumper path: global-metadata (no ptrace IL2 calls)");
-        if (metadata_dump_run(pid, info.base, metaRemote, metaSize, outPath, targetCmdline, log,
-                              progress))
-            return true;
-        ui_log("[dump] metadata dump failed — trying runtime ptrace APIs…");
-    }
-
+bool RemoteIl2CppExecutor::run_dump_runtime(const std::string &outPath,
+                                            const std::string &targetCmdline, DumpLogFn log,
+                                            DumpProgressFn progress) {
     DumpCtx ctx{};
     ctx.pid = pid;
     ctx.il2cppBase = info.base;
@@ -252,4 +268,15 @@ bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::strin
         return mem_read(pid, remote, buf, n);
     };
     return dump_cs_run(ctx, outPath, targetCmdline, log, progress);
+}
+
+bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::string &targetCmdline,
+                                    DumpLogFn log, DumpProgressFn progress) {
+    uintptr_t metaRemote = 0;
+    size_t metaSize = 0;
+    if (metadata_find(pid, info.base, metaRemote, metaSize) &&
+        metadata_dump_run(pid, info.base, metaRemote, metaSize, outPath, targetCmdline, log,
+                          progress))
+        return true;
+    return run_dump_runtime(outPath, targetCmdline, log, progress);
 }

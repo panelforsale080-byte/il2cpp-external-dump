@@ -151,7 +151,7 @@ struct MetaView {
 
 static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found) {
     if (len < sizeof(MetaHeader)) return false;
-    const size_t step = 4096;
+    const size_t step = 256;
     std::vector<uint8_t> chunk(65536 + sizeof(MetaHeader));
     for (size_t off = 0; off + sizeof(MetaHeader) <= len; off += step) {
         const size_t readSz = std::min(chunk.size(), len - off);
@@ -336,27 +336,40 @@ static std::string dump_type_block(const MetaView &v, int typeIdx) {
 
 } // namespace
 
+static bool map_worth_scanning(const MapsReg &m, uintptr_t il2cppBase) {
+    if (m.perms[0] != 'r') return false;
+    const size_t len = (size_t)(m.end - m.start);
+    if (len < 32768 || len > 128 * 1024 * 1024) return false;
+    if (m.path.find("global-metadata") != std::string::npos) return true;
+    if (m.path.find("il2cpp") != std::string::npos) return true;
+    if (m.path.find("/data/app/") != std::string::npos) return true;
+    if (m.path.find(".apk") != std::string::npos) return true;
+    if (il2cppBase && m.start <= il2cppBase && m.end > il2cppBase) return true;
+    if (m.path.empty() && len >= 256 * 1024) return true;
+    return false;
+}
+
 bool metadata_find(pid_t pid, uintptr_t il2cppBase, uintptr_t &metaRemote, size_t &metaSize) {
     metaRemote = 0;
     metaSize = 0;
     std::vector<MapsReg> maps;
     if (!mem_maps(pid, maps)) return false;
 
+    int scanned = 0;
     for (const auto &m : maps) {
-        if (!m.perms[0]) continue;
-        const bool metaPath = m.path.find("global-metadata") != std::string::npos;
-        const bool il2 = il2cppBase && m.start <= il2cppBase && m.end >= il2cppBase;
-        const bool anonRo = m.path.empty() && m.perms[0] == 'r' && (m.end - m.start) > 256 * 1024;
-        if (!metaPath && !il2 && !anonRo) continue;
+        if (!map_worth_scanning(m, il2cppBase)) continue;
+        ++scanned;
         const size_t len = (size_t)(m.end - m.start);
         uintptr_t found = 0;
         if (!scan_region(pid, m.start, len, found)) continue;
         metaRemote = found;
         metaSize = len - (found - m.start);
-        ui_log("[metadata] found @ 0x%llx (%s)", (unsigned long long)found,
-               m.path.empty() ? "anon" : m.path.c_str());
+        ui_log("[metadata] FAB11BAF @ 0x%llx map=%s", (unsigned long long)found,
+               m.path.empty() ? "[anon]" : m.path.c_str());
         return true;
     }
+    ui_log("[metadata] not found (scanned %d maps, il2cpp base=0x%llx)", scanned,
+           (unsigned long long)il2cppBase);
     return false;
 }
 
@@ -394,6 +407,12 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
 
     int processed = 0;
     const int total = v.hdr.typeDefinitionsCount;
+    const auto dump_all_types = [&]() {
+        for (int ti = 0; ti < v.hdr.typeDefinitionsCount; ++ti) {
+            out << dump_type_block(v, ti);
+            ++processed;
+        }
+    };
     for (int img = 0; img < v.hdr.imagesCount; ++img) {
         const size_t iOff = (size_t)v.hdr.imagesOffset + (size_t)img * sizeof(ImageDef);
         if (iOff + sizeof(ImageDef) > v.blob.size()) continue;
@@ -414,10 +433,14 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
             }
         }
     }
+    if (processed == 0 && v.hdr.typeDefinitionsCount > 0) {
+        logf("image walk empty — dumping %d type defs directly", v.hdr.typeDefinitionsCount);
+        dump_all_types();
+    }
     out.close();
 
     if (processed == 0) {
-        logf("ERROR: metadata dump wrote 0 types");
+        logf("ERROR: metadata dump wrote 0 types (v%d)", v.hdr.version);
         return false;
     }
     logf("SUCCESS metadata dump.cs classes=%d path=%s", processed, outPath.c_str());

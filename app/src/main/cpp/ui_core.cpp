@@ -3,7 +3,9 @@
 #include "ui_log.hpp"
 #include "clip_android.hpp"
 #include "il2cpp_remote.hpp"
+#include "metadata_dump.hpp"
 #include "path_util.hpp"
+#include "remote_il2cpp.hpp"
 
 #include <android/input.h>
 #include <GLES2/gl2.h>
@@ -145,24 +147,49 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
         return;
     }
 
+    RemoteIl2CppInfo il2{};
+    remote_il2cpp_invalidate_cache(pid);
+    ui_log("[dump] scanning maps + symbols…");
+    if (!remote_detect_il2cpp(pid, il2)) {
+        ui_log("[dump] ERROR: no IL2CPP module (il2cpp_domain_get export)");
+        ui_log("[dump] Hint: Unity game with libil2cpp.so — not this dumper app");
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "No IL2CPP in target");
+        g_dumpRunning.store(false);
+        return;
+    }
+    ui_log("[il2cpp] OK lib=%s base=0x%llx", il2.libBaseName, (unsigned long long)il2.base);
+    if (il2.note[0]) ui_log("[il2cpp] %s", il2.note);
+
+    ui_log("[dump] searching global-metadata (conRent / Il2CppDumper style)…");
+    uintptr_t metaRemote = 0;
+    size_t metaSize = 0;
+    auto logFn = [](const char *msg) { ui_log("%s", msg); };
+    auto progFn = [](const DumpProgress &p) { g_dumpProgress.store(p.progress); };
+    if (metadata_find(pid, il2.base, metaRemote, metaSize) &&
+        metadata_dump_run(pid, il2.base, metaRemote, metaSize, outPath, cmdline, logFn, progFn)) {
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Saved: %s", outPath.c_str());
+        ui_log("[dump] OK → %s", outPath.c_str());
+        g_dumpProgress.store(1.f);
+        g_dumpRunning.store(false);
+        return;
+    }
+
+    ui_log("[dump] metadata path failed — ptrace runtime APIs (often SIGSEGV on Unity)…");
     RemoteIl2CppExecutor ex{};
+    ex.pid = pid;
+    ex.info = il2;
     char err[256] = {};
-    if (!ex.open(pid, err, sizeof(err))) {
+    if (!ex.open_attach_only(pid, err, sizeof(err))) {
         ui_log("[dump] ERROR: %s", err);
-        if (std::strstr(err, "no IL2CPP module"))
-            ui_log("[dump] Hint: target must be Unity/IL2CPP game — not system apps or this dumper");
-        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Failed: %s", err);
+        std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dump failed — check log");
         g_dumpRunning.store(false);
         return;
     }
     ui_log("[dump] lib=%s", ex.info.libPath);
     ui_log("[dump] base=0x%llx", (unsigned long long)ex.info.base);
-    if (ex.info.note[0]) ui_log("[dump] %s", ex.info.note);
 
-    const bool ok = ex.run_dump(
-        outPath, cmdline,
-        [](const char *msg) { ui_log("%s", msg); },
-        [](const DumpProgress &p) { g_dumpProgress.store(p.progress); });
+    const bool ok = ex.run_dump_runtime(
+        outPath, cmdline, logFn, progFn);
 
     ex.close();
     if (ok) {
