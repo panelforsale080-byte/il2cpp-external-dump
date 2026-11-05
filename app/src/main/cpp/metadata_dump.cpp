@@ -158,10 +158,35 @@ static int64_t meta_now_ms() {
 
 static bool validate_meta_header(const MetaHeader &h) {
     if (h.sanity != (int32_t)kMetaSanity) return false;
-    if (h.version < 16 || h.version > 39) return false;
-    if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 200000) return false;
-    if (h.imagesCount < 0 || h.imagesCount > 4096) return false;
+    if (h.version < 16 || h.version > 999) return false;
+    if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 500000) return false;
+    if (h.imagesCount < 0 || h.imagesCount > 8192) return false;
     return true;
+}
+
+static bool try_metadata_from_file_paths(pid_t pid, const std::string &mapPath, uintptr_t &metaRemote,
+                                          size_t &metaSize, const char *tag) {
+    std::vector<std::string> paths;
+    if (!mapPath.empty()) paths.push_back(mapPath);
+    if (!mapPath.empty() && mapPath[0] == '/') {
+        char procRoot[768];
+        std::snprintf(procRoot, sizeof(procRoot), "/proc/%d/root%s", (int)pid, mapPath.c_str());
+        paths.push_back(procRoot);
+    }
+    for (const auto &p : paths) {
+        uintptr_t fileOff = 0;
+        g_meta_file_cache.clear();
+        if (!scan_file_path(p.c_str(), fileOff, g_meta_file_cache)) continue;
+        g_meta_file_header_off = fileOff;
+        metaRemote = fileOff;
+        metaSize = g_meta_file_cache.size() - fileOff;
+        MetaHeader hdr{};
+        std::memcpy(&hdr, g_meta_file_cache.data() + fileOff, sizeof(hdr));
+        ui_log("[metadata] FAB11BAF from %s (%s v=%d types=%d)", tag, p.c_str(), hdr.version,
+               hdr.typeDefinitionsCount);
+        return true;
+    }
+    return false;
 }
 
 static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOut) {
@@ -456,19 +481,12 @@ bool metadata_find(pid_t pid, uintptr_t il2cppBase, const char *libPathHint, uin
     for (const auto &m : maps) {
         if (m.path.find("global-metadata") == std::string::npos) continue;
         ui_log("[metadata] GSpace/conRent cache: %s", m.path.c_str());
+        if (try_metadata_from_file_paths(pid, m.path, metaRemote, metaSize, "file")) return true;
         uintptr_t found = 0;
         if (load_metadata_from_map(pid, m, found)) {
             metaRemote = found;
             metaSize = g_meta_file_cache.size() - g_meta_file_header_off;
-            ui_log("[metadata] FAB11BAF @ 0x%llx (global-metadata.dat)", (unsigned long long)found);
-            return true;
-        }
-        uintptr_t fileOff = 0;
-        if (scan_file_path(m.path.c_str(), fileOff, g_meta_file_cache)) {
-            g_meta_file_header_off = fileOff;
-            metaRemote = fileOff;
-            metaSize = g_meta_file_cache.size() - fileOff;
-            ui_log("[metadata] FAB11BAF from path file");
+            ui_log("[metadata] FAB11BAF @ 0x%llx (global-metadata.dat map)", (unsigned long long)found);
             return true;
         }
     }
