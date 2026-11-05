@@ -441,21 +441,27 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         return ctx.domainValid ? ctx.domainValid(d) : true;
     };
 
-    uintptr_t domain = ctx.domainHint;
-    if (domain_ok(domain) && ctx.sym("il2cpp_thread_attach")) {
+    uintptr_t domain = 0;
+    uintptr_t live = 0;
+    const bool liveOk = ctx.call0("il2cpp_domain_get", live);
+    logf("live il2cpp_domain_get -> 0x%llx (%s)", (unsigned long long)live, liveOk ? "ok" : "fail");
+    if (liveOk && domain_ok(live))
+        domain = live;
+    else if (domain_ok(ctx.domainHint))
+        domain = ctx.domainHint;
+    else {
+        logf("ERROR: no valid domain live=0x%llx hint=0x%llx", (unsigned long long)live,
+             (unsigned long long)ctx.domainHint);
+        return false;
+    }
+
+    if (ctx.sym("il2cpp_thread_attach")) {
         uintptr_t thr = 0;
         ctx.call1("il2cpp_thread_attach", domain, thr);
         logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,
              (unsigned long long)thr);
-    }
-
-    uintptr_t live = 0;
-    if (ctx.call0("il2cpp_domain_get", live) && domain_ok(live))
-        domain = live;
-    else if (!domain_ok(domain)) {
-        logf("ERROR: il2cpp_domain_get live=0x%llx hint=0x%llx", (unsigned long long)live,
-             (unsigned long long)ctx.domainHint);
-        return false;
+        uintptr_t live2 = 0;
+        if (ctx.call0("il2cpp_domain_get", live2) && domain_ok(live2)) domain = live2;
     }
     logf("domain=0x%llx", (unsigned long long)domain);
 

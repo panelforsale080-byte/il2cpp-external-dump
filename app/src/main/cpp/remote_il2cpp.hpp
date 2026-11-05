@@ -3,6 +3,8 @@
 #include <cstdint>
 #include <sys/types.h>
 
+struct RemoteSession;
+
 struct RemoteIl2CppInfo {
     char libPath[512] = {};
     char libBaseName[128] = {};
@@ -36,4 +38,8 @@ bool remote_refresh_domain_ptr(pid_t pid, RemoteIl2CppInfo &io);
 /** One-shot il2cpp_domain_get in target (fills domain_ptr when static decode fails). */
 bool remote_il2cpp_prime_domain(pid_t pid, RemoteIl2CppInfo &io);
 bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain);
+bool remote_il2cpp_domain_get_uses_bl(pid_t pid, uintptr_t symDomainGet);
+/** Ptrace call wrapper / BL targets until a valid domain is returned. */
+bool remote_il2cpp_session_call_domain_get(RemoteSession &s, pid_t pid, uintptr_t symDomainGet,
+                                           uintptr_t &domainOut);
 void remote_il2cpp_invalidate_cache(pid_t pid);

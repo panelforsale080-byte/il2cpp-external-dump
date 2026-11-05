@@ -88,6 +88,8 @@ static const char *kIl2Api[] = {
     "il2cpp_runtime_invoke",
 };
 
+static bool domain_looks_valid(pid_t pid, uintptr_t domain);
+
 static bool decode_adrp(uint32_t w, uint64_t pc, int64_t &pageOut) {
     if ((w & 0x9F000000u) != 0x90000000u) return false;
     int64_t immhi = (int64_t)((w >> 5) & 0x7ffffu);
@@ -98,16 +100,41 @@ static bool decode_adrp(uint32_t w, uint64_t pc, int64_t &pageOut) {
     return true;
 }
 
+static uintptr_t decode_bl_target(uint32_t w, uint64_t pc) {
+    if ((w & 0xFC000000u) != 0x94000000u) return 0;
+    int32_t imm26 = (int32_t)(w & 0x03FFFFFFu);
+    if (imm26 & 0x02000000) imm26 |= (int32_t)0xFC000000u;
+    return (uintptr_t)((int64_t)pc + ((int64_t)imm26 << 2));
+}
+
+static void probe_got_from_regs(pid_t pid, const uint64_t *x, uintptr_t &domainOut) {
+    for (int r = 0; r < 31; ++r) {
+        const uintptr_t addr = (uintptr_t)x[r];
+        if (!mem_ptr_ok(addr)) continue;
+        uintptr_t p = 0;
+        if (mem_read(pid, addr, p) && domain_looks_valid(pid, p)) domainOut = p;
+        if (domain_looks_valid(pid, addr)) domainOut = addr;
+    }
+}
+
+static bool getter_uses_bl(pid_t pid, uintptr_t func) {
+    uint32_t ins[12] = {};
+    if (!mem_read(pid, func, ins, sizeof(ins))) return false;
+    for (int i = 0; i < 12; ++i) {
+        if ((ins[i] & 0xFC000000u) == 0x94000000u) return true;
+    }
+    return false;
+}
+
 static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) {
     domainOut = 0;
     if (!func) return false;
-    uint32_t ins[32] = {};
+    uint32_t ins[64] = {};
     if (!mem_read(pid, func, ins, sizeof(ins))) return false;
 
     uint64_t x[31] = {};
-    for (int i = 0; i < 48; ++i) {
+    for (int i = 0; i < 60; ++i) {
         const uint32_t w = ins[i];
-        const uint32_t w2 = ins[i + 1];
         const uint64_t pc = func + (uint64_t)i * 4;
 
         int64_t page = 0;
@@ -118,30 +145,39 @@ static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) 
         if ((w & 0xFFC00000u) == 0x91000000u) {
             const int rd = (int)(w & 0x1fu);
             const int rn = (int)((w >> 5) & 0x1fu);
-            const uint64_t imm = (uint64_t)((w >> 10) & 0xFFFu);
+            uint64_t imm = (uint64_t)((w >> 10) & 0xFFFu);
+            if (w & (1u << 22)) imm |= 0xFFFFFFFFFFFFF000ULL;
             if (rd < 31 && rn < 31) x[rd] = x[rn] + imm;
         }
-        if ((w2 & 0xFFC00000u) == 0xF9400000u) {
-            const int rd = (int)(w2 & 0x1fu);
-            const int rn = (int)((w2 >> 5) & 0x1fu);
-            const uint64_t off = (uint64_t)(((w2 >> 10) & 0xFFFu) * 8);
+        if ((w & 0xFFC00000u) == 0xF9400000u) {
+            const int rd = (int)(w & 0x1fu);
+            const int rn = (int)((w >> 5) & 0x1fu);
+            const uint64_t off = (uint64_t)(((w >> 10) & 0xFFFu) * 8);
             if (rd < 31 && rn < 31) {
                 uintptr_t ptr = 0;
-                if (mem_read(pid, (uintptr_t)(x[rn] + off), ptr) && mem_ptr_ok(ptr)) {
-                    if (rd == 0) domainOut = ptr;
+                const uintptr_t addr = (uintptr_t)(x[rn] + off);
+                if (mem_read(pid, addr, ptr) && mem_ptr_ok(ptr)) {
                     x[rd] = ptr;
+                    if (domain_looks_valid(pid, ptr)) domainOut = ptr;
                 }
             }
         }
+        if ((w & 0xFC000000u) == 0x94000000u) {
+            probe_got_from_regs(pid, x, domainOut);
+            const uintptr_t blt = decode_bl_target(w, pc);
+            uintptr_t subDom = 0;
+            if (blt && domain_from_getter(pid, blt, subDom) && domain_looks_valid(pid, subDom))
+                domainOut = subDom;
+        }
         if ((w & 0xFFFFFC1Fu) == 0xD65F0000u && (w & 0x1fu) == 0x1fu) {
-            if (domainOut) return true;
-            if (mem_ptr_ok(x[0])) {
-                domainOut = x[0];
+            if (domainOut && domain_looks_valid(pid, domainOut)) return true;
+            if (domain_looks_valid(pid, (uintptr_t)x[0])) {
+                domainOut = (uintptr_t)x[0];
                 return true;
             }
         }
     }
-    return domainOut != 0;
+    return domainOut != 0 && domain_looks_valid(pid, domainOut);
 }
 
 static bool module_like_il2cpp(const SoModule &m) {
@@ -253,6 +289,35 @@ static RemoteIl2CppInfo g_il2Cached{};
 
 } // namespace
 
+bool remote_il2cpp_domain_get_uses_bl(pid_t pid, uintptr_t symDomainGet) {
+    return getter_uses_bl(pid, symDomainGet);
+}
+
+bool remote_il2cpp_session_call_domain_get(RemoteSession &s, pid_t pid, uintptr_t symDomainGet,
+                                           uintptr_t &domainOut) {
+    domainOut = 0;
+    if (!symDomainGet) return false;
+    std::vector<uintptr_t> targets;
+    targets.push_back(symDomainGet);
+    uint32_t ins[24] = {};
+    if (mem_read(pid, symDomainGet, ins, sizeof(ins))) {
+        for (int i = 0; i < 20; ++i) {
+            const uint64_t pc = symDomainGet + (uint64_t)i * 4;
+            const uintptr_t blt = decode_bl_target(ins[i], pc);
+            if (blt) targets.push_back(blt);
+        }
+    }
+    for (uintptr_t fn : targets) {
+        if (!fn) continue;
+        uintptr_t d = 0;
+        if (remote_session_call(s, fn, {}, d) && domain_looks_valid(pid, d)) {
+            domainOut = d;
+            return true;
+        }
+    }
+    return false;
+}
+
 bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {
     if (!mem_ptr_ok(domain)) return false;
     uintptr_t words[16] = {};
@@ -263,12 +328,25 @@ bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {
     return ptrLike >= 2;
 }
 
+static bool live_call_domain_get(pid_t pid, uintptr_t sym, uintptr_t &domainOut, char *err,
+                                 size_t errCap) {
+    domainOut = 0;
+    RemoteSession s{};
+    if (!remote_session_begin(pid, s)) {
+        if (err && errCap) std::snprintf(err, errCap, "%s", s.err);
+        return false;
+    }
+    const bool ok = remote_il2cpp_session_call_domain_get(s, pid, sym, domainOut);
+    if (!ok && err && errCap) std::snprintf(err, errCap, "domain_get live call failed");
+    remote_session_end(s);
+    return ok;
+}
+
 bool remote_il2cpp_prime_domain(pid_t pid, RemoteIl2CppInfo &io) {
     if (!io.sym_domain_get) return false;
     uintptr_t domain = 0;
     char err[160] = {};
-    if (!remote_call(pid, io.sym_domain_get, {}, domain, err, sizeof(err))) return false;
-    if (!mem_ptr_ok(domain)) return false;
+    if (!live_call_domain_get(pid, io.sym_domain_get, domain, err, sizeof(err))) return false;
     io.domain_ptr = domain;
     std::snprintf(io.note, sizeof(io.note), "live il2cpp_domain_get -> 0x%llx",
                   (unsigned long long)domain);
@@ -285,6 +363,10 @@ bool remote_refresh_domain_ptr(pid_t pid, RemoteIl2CppInfo &io) {
     uint32_t ins[8] = {};
     mem_read(pid, io.sym_domain_get, ins, sizeof(ins));
     ui_log("[il2cpp] domain_get ins: %08X %08X %08X %08X", ins[0], ins[1], ins[2], ins[3]);
+    if (getter_uses_bl(pid, io.sym_domain_get)) {
+        std::snprintf(io.note, sizeof(io.note), "domain_get uses BL — use GOT decode / live call");
+        return false;
+    }
     domain_scan_bss(pid, io, io.domain_ptr);
     if (io.domain_ptr && domain_looks_valid(pid, io.domain_ptr)) {
         std::snprintf(io.note, sizeof(io.note), "domain* bss scan @ 0x%llx",

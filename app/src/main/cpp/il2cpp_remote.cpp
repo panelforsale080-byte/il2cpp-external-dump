@@ -84,6 +84,11 @@ uintptr_t RemoteIl2CppExecutor::sym(const char *name) const {
 }
 
 bool RemoteIl2CppExecutor::call0(const char *name, uintptr_t &ret) {
+    if (std::strcmp(name, "il2cpp_domain_get") == 0) {
+        const uintptr_t fn = sym(name);
+        if (!fn) return false;
+        return remote_il2cpp_session_call_domain_get(session_, pid, fn, ret);
+    }
     const uintptr_t fn = sym(name);
     if (!fn) return false;
     return remote_session_call(session_, fn, {}, ret);
@@ -153,10 +158,25 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
         return false;
     }
 
-    if (!remote_il2cpp_domain_valid(pid, info.domain_ptr)) {
+    auto probe_assemblies = [&](uintptr_t domain) -> bool {
+        if (!remote_il2cpp_domain_valid(pid, domain)) return false;
+        uintptr_t slot = scratch(8);
+        uintptr_t arr = 0;
+        if (!call2("il2cpp_domain_get_assemblies", domain, slot, arr) || !arr) return false;
+        size_t n = 0;
+        mem_read(pid, slot, &n, sizeof(n));
+        return n > 0;
+    };
+
+    if (!probe_assemblies(info.domain_ptr)) {
         uintptr_t live = 0;
-        if (call0("il2cpp_domain_get", live) && remote_il2cpp_domain_valid(pid, live))
+        if (remote_il2cpp_session_call_domain_get(session_, pid, sym("il2cpp_domain_get"), live) &&
+            probe_assemblies(live))
             info.domain_ptr = live;
+        else if (live && remote_il2cpp_domain_valid(pid, live))
+            info.domain_ptr = live;
+        else
+            info.domain_ptr = 0;
     }
     return true;
 }
