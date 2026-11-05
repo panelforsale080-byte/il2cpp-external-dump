@@ -248,14 +248,20 @@ static void domain_scan_bss(pid_t pid, const RemoteIl2CppInfo &lib, uintptr_t &d
     }
 }
 
-bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {
-    return domain_looks_valid(pid, domain);
-}
-
 static pid_t g_il2CachedPid = 0;
 static RemoteIl2CppInfo g_il2Cached{};
 
 } // namespace
+
+bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {
+    if (!mem_ptr_ok(domain)) return false;
+    uintptr_t words[16] = {};
+    if (!mem_read(pid, domain, words, sizeof(words))) return false;
+    int ptrLike = 0;
+    for (uintptr_t w : words)
+        if (mem_ptr_ok(w)) ptrLike++;
+    return ptrLike >= 2;
+}
 
 bool remote_il2cpp_prime_domain(pid_t pid, RemoteIl2CppInfo &io) {
     if (!io.sym_domain_get) return false;
