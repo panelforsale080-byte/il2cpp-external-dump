@@ -168,16 +168,17 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
         return n > 0;
     };
 
-    if (!probe_assemblies(info.domain_ptr)) {
-        uintptr_t live = 0;
-        if (remote_il2cpp_session_call_domain_get(session_, pid, sym("il2cpp_domain_get"), live) &&
-            probe_assemblies(live))
-            info.domain_ptr = live;
-        else if (live && remote_il2cpp_domain_valid(pid, live))
-            info.domain_ptr = live;
-        else
-            info.domain_ptr = 0;
+    if (info.domain_ptr && probe_assemblies(info.domain_ptr)) return true;
+
+    uintptr_t live = 0;
+    if (remote_il2cpp_session_call_domain_get(session_, pid, sym("il2cpp_domain_get"), live) &&
+        probe_assemblies(live)) {
+        info.domain_ptr = live;
+        return true;
     }
+    if (live && remote_il2cpp_domain_valid(pid, live)) info.domain_ptr = live;
+    else if (!info.domain_ptr || !remote_il2cpp_domain_valid(pid, info.domain_ptr))
+        info.domain_ptr = live;
     return true;
 }
 

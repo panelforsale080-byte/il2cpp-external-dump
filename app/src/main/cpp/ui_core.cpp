@@ -127,6 +127,7 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
     std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Dumping PID %d…", (int)pid);
     ui_log("[dump] start pid=%d", (int)pid);
     ui_log("[dump] %s", cmdline.c_str());
+    ui_log("[dump] attach + resolve IL2CPP…");
 
     RemoteIl2CppExecutor ex{};
     char err[256] = {};

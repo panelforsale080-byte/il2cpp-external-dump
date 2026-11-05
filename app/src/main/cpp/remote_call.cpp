@@ -2,12 +2,14 @@
 #include "mem.hpp"
 #include <cstring>
 #include <cstring>
+#include <algorithm>
 #include <mutex>
 #include <errno.h>
 #include <sys/ptrace.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <time.h>
 
 #if defined(__aarch64__)
 
@@ -97,6 +99,34 @@ uintptr_t remote_session_scratch(RemoteSession &s, int slot, size_t bytes) {
     return base;
 }
 
+static int64_t now_ms_monotonic() {
+    struct timespec ts {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/** Wait for tracee stop; returns false on timeout (restores saved regs). */
+static bool wait_tracee_stop(RemoteSession &s, int &st, int timeoutMs) {
+    const int64_t deadline = now_ms_monotonic() + timeoutMs;
+    while (now_ms_monotonic() < deadline) {
+        const pid_t w = waitpid(s.tid, &st, WNOHANG);
+        if (w == s.tid) return WIFSTOPPED(st);
+        if (w < 0 && errno != EINTR) return false;
+        usleep(5000);
+    }
+    ptrace(PTRACE_INTERRUPT, s.tid, nullptr, nullptr);
+    for (int i = 0; i < 50; ++i) {
+        const pid_t w = waitpid(s.tid, &st, WNOHANG);
+        if (w == s.tid && WIFSTOPPED(st)) {
+            set_regs(s.tid, *saved_pt(s));
+            return false;
+        }
+        usleep(10000);
+    }
+    set_regs(s.tid, *saved_pt(s));
+    return false;
+}
+
 static uintptr_t trap_return_site(RemoteSession &s) {
     static int trapSlot = 0;
     const uintptr_t p = remote_session_scratch(s, 40 + (trapSlot++ % 8), 4);
@@ -130,8 +160,13 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     int st = 0;
     bool gotTrap = false;
-    for (int tries = 0; tries < 32; ++tries) {
-        if (waitpid(s.tid, &st, 0) < 0) break;
+    const int64_t callDeadline = now_ms_monotonic() + 2500;
+    for (int tries = 0; tries < 64; ++tries) {
+        if (now_ms_monotonic() >= callDeadline) break;
+        const int sliceMs = (int)std::min<int64_t>(200, callDeadline - now_ms_monotonic());
+        if (!wait_tracee_stop(s, st, sliceMs > 0 ? sliceMs : 1)) {
+            break;
+        }
         if (!WIFSTOPPED(st)) break;
         const int sig = WSTOPSIG(st);
         if (sig == SIGTRAP) {
@@ -146,7 +181,7 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
         ptrace(PTRACE_CONT, s.tid, nullptr, (void *)(uintptr_t)sig);
     }
     if (!gotTrap) {
-        std::snprintf(s.err, sizeof(s.err), "no SIGTRAP return from call");
+        std::snprintf(s.err, sizeof(s.err), "call timeout (no SIGTRAP)");
         set_regs(s.tid, *saved_pt(s));
         return false;
     }

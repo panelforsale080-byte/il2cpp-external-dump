@@ -298,7 +298,8 @@ bool remote_il2cpp_session_call_domain_get(RemoteSession &s, pid_t pid, uintptr_
     domainOut = 0;
     if (!symDomainGet) return false;
     std::vector<uintptr_t> targets;
-    targets.push_back(symDomainGet);
+    const bool blWrap = getter_uses_bl(pid, symDomainGet);
+    if (!blWrap) targets.push_back(symDomainGet);
     uint32_t ins[24] = {};
     if (mem_read(pid, symDomainGet, ins, sizeof(ins))) {
         for (int i = 0; i < 20; ++i) {
@@ -307,8 +308,10 @@ bool remote_il2cpp_session_call_domain_get(RemoteSession &s, pid_t pid, uintptr_
             if (blt) targets.push_back(blt);
         }
     }
+    int tried = 0;
     for (uintptr_t fn : targets) {
         if (!fn) continue;
+        if (tried++ > 6) break;
         uintptr_t d = 0;
         if (remote_session_call(s, fn, {}, d) && domain_looks_valid(pid, d)) {
             domainOut = d;
@@ -387,9 +390,7 @@ void remote_il2cpp_invalidate_cache(pid_t pid) {
 bool remote_detect_il2cpp(pid_t pid, RemoteIl2CppInfo &out) {
     if (g_il2CachedPid == pid && g_il2Cached.sym_domain_get) {
         out = g_il2Cached;
-        if (!out.domain_ptr)
-            remote_il2cpp_prime_domain(pid, out);
-        if (!out.domain_ptr)
+        if (!out.domain_ptr || !domain_looks_valid(pid, out.domain_ptr))
             remote_refresh_domain_ptr(pid, out);
         g_il2Cached = out;
         return true;
@@ -409,9 +410,7 @@ bool remote_detect_il2cpp(pid_t pid, RemoteIl2CppInfo &out) {
         ++tried;
         int hits = 0;
         if (try_module(pid, m, out, hits)) {
-            if (!out.domain_ptr)
-                remote_il2cpp_prime_domain(pid, out);
-            if (!out.domain_ptr)
+            if (!out.domain_ptr || !domain_looks_valid(pid, out.domain_ptr))
                 remote_refresh_domain_ptr(pid, out);
             g_il2CachedPid = pid;
             g_il2Cached = out;
@@ -427,9 +426,7 @@ bool remote_detect_il2cpp(pid_t pid, RemoteIl2CppInfo &out) {
         ++tried;
         int hits = 0;
         if (try_module(pid, m, out, hits)) {
-            if (!out.domain_ptr)
-                remote_il2cpp_prime_domain(pid, out);
-            if (!out.domain_ptr)
+            if (!out.domain_ptr || !domain_looks_valid(pid, out.domain_ptr))
                 remote_refresh_domain_ptr(pid, out);
             g_il2CachedPid = pid;
             g_il2Cached = out;
