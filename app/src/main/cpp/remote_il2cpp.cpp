@@ -4,6 +4,7 @@
 #include "remote_elf.hpp"
 #include "ui_log.hpp"
 #include <algorithm>
+#include <chrono>
 #include <vector>
 #include <cstring>
 #include <string>
@@ -377,11 +378,17 @@ static bool assemblies_pair_valid(pid_t pid, uintptr_t arr, size_t n) {
 
 static bool il2cpp_image_name_ok(pid_t pid, uintptr_t image) {
     if (!mem_ptr_ok(image)) return false;
+    auto name_ok = [](const char *b) {
+        return b && (std::strstr(b, ".dll") != nullptr || std::strstr(b, "Assembly-") != nullptr);
+    };
+    char inlineName[32] = {};
+    if (mem_read(pid, image, inlineName, sizeof(inlineName) - 1) && name_ok(inlineName))
+        return true;
     uintptr_t nameP = 0;
     if (!mem_read(pid, image, nameP) || !mem_ptr_ok(nameP)) return false;
-    char b[28] = {};
+    char b[32] = {};
     if (!mem_read(pid, nameP, b, sizeof(b) - 1)) return false;
-    return std::strstr(b, ".dll") != nullptr || std::strstr(b, "Assembly-") != nullptr;
+    return name_ok(b);
 }
 
 static bool il2cpp_assembly_ptr_ok(pid_t pid, uintptr_t asmPtr) {
@@ -396,37 +403,59 @@ static bool find_assemblies_array_heuristic(pid_t pid, uintptr_t &assembliesOut,
     if (!mem_maps(pid, maps)) return false;
     size_t bestCount = 0;
     uintptr_t bestArr = 0;
+    const int64_t deadline =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count() +
+        4000;
+    auto timed_out = [&]() {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
+                   .count() >= deadline;
+    };
+    ui_log("[il2cpp] assemblies heuristic scan (libc_malloc / liblogic, 4s cap)…");
     for (const auto &m : maps) {
+        if (timed_out()) break;
         if (m.perms[0] != 'r' || m.perms[1] != 'w') continue;
         const std::string &p = m.path;
         if (p.find("stack") != std::string::npos || p.find("dalvik") != std::string::npos) continue;
+        if (p.find("libc_malloc") == std::string::npos && p.find("liblogic") == std::string::npos &&
+            p.find("[anon:") == std::string::npos)
+            continue;
         const size_t len = (size_t)(m.end - m.start);
-        if (len < 64 || len > 32 * 1024 * 1024) continue;
-        const size_t step = sizeof(uintptr_t);
+        if (len < 512 || len > 12 * 1024 * 1024) continue;
+        const size_t step = 512;
         for (size_t off = 0; off + step <= len; off += step) {
+            if ((off & 0x3fff) == 0 && timed_out()) break;
             uintptr_t asm0 = 0;
-            if (!mem_read(pid, m.start + off, asm0) || !il2cpp_assembly_ptr_ok(pid, asm0)) continue;
+            if (!mem_read(pid, m.start + off, asm0) || !mem_ptr_ok(asm0)) continue;
+            if (!il2cpp_assembly_ptr_ok(pid, asm0)) continue;
             size_t run = 1;
-            while (off + run * step + step <= len) {
+            while (off + run * sizeof(uintptr_t) + sizeof(uintptr_t) <= len) {
                 uintptr_t asmN = 0;
-                if (!mem_read(pid, m.start + off + run * step, asmN) ||
+                if (!mem_read(pid, m.start + off + run * sizeof(uintptr_t), asmN) ||
                     !il2cpp_assembly_ptr_ok(pid, asmN))
                     break;
                 ++run;
-                if (run >= 64) break;
+                if (run >= 128) break;
             }
-            if (run >= 8 && run > bestCount) {
+            if (run >= 6 && run > bestCount) {
                 bestCount = run;
                 bestArr = m.start + off;
             }
         }
     }
-    if (bestCount < 8) return false;
+    if (bestCount < 6) return false;
     assembliesOut = bestArr;
     countOut = bestCount;
     ui_log("[il2cpp] assemblies heuristic array @ 0x%llx count=%zu", (unsigned long long)bestArr,
            bestCount);
     return true;
+}
+
+bool remote_il2cpp_read_assemblies_heuristic(pid_t pid, uintptr_t &assembliesOut,
+                                             size_t &countOut) {
+    return find_assemblies_array_heuristic(pid, assembliesOut, countOut);
 }
 
 bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &assembliesOut,
@@ -473,7 +502,7 @@ bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &a
         domain = next;
         if (try_pair(domain)) return true;
     }
-    return find_assemblies_array_heuristic(pid, assembliesOut, countOut);
+    return false;
 }
 
 bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {

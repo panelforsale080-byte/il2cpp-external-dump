@@ -665,6 +665,7 @@ static bool metadata_scan_runtime_decrypted(pid_t pid, uintptr_t il2cppBase, uin
                             m.path.empty() ? "[anon]" : m.path.c_str());
         uintptr_t found = 0;
         const size_t len = (size_t)(m.end - m.start);
+        if (try_region_mlbb_v1024(pid, m.start, len, metaRemote, metaSize)) return true;
         if (!scan_region(pid, m.start, len, found)) continue;
         if (!metadata_load_from_remote(pid, found, metaRemote, metaSize)) continue;
         g_meta_file_header_off = 0;
@@ -736,6 +737,52 @@ static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOu
     return false;
 }
 
+static bool try_region_mlbb_v1024(pid_t pid, uintptr_t start, size_t len, uintptr_t &metaRemote,
+                                  size_t &metaSize) {
+    constexpr size_t kBlob = 4755456;
+    if (len < kBlob || len > kBlob + 1024 * 1024) return false;
+    g_meta_file_cache.resize(kBlob);
+    if (!mem_read(pid, start, g_meta_file_cache.data(), kBlob)) {
+        g_meta_file_cache.clear();
+        return false;
+    }
+    uint32_t sanity = 0;
+    int32_t version = 0;
+    std::memcpy(&sanity, g_meta_file_cache.data(), sizeof(sanity));
+    std::memcpy(&version, g_meta_file_cache.data() + 4, sizeof(version));
+    if (sanity != kMetaSanity) {
+        g_meta_file_cache.clear();
+        return false;
+    }
+    std::vector<uint8_t> copy = g_meta_file_cache;
+    if (version == 1024 && metadata_try_decrypt_file(copy)) {
+        MetaView mv{};
+        mv.blob = copy;
+        if (meta_view_init_from_blob(mv)) {
+            g_meta_file_cache.swap(copy);
+            g_meta_file_header_off = 0;
+            metaRemote = start;
+            metaSize = g_meta_file_cache.size();
+            ui_log("[metadata] MLBB v1024 heap blob decrypted @ 0x%llx types=%d",
+                   (unsigned long long)start, mv.typeDefinitionsCount);
+            return true;
+        }
+    }
+    if (validate_meta_header_v29(*reinterpret_cast<MetaHeaderV29 *>(g_meta_file_cache.data()),
+                                 g_meta_file_cache.size()) ||
+        (version == 1024 && g_meta_file_cache.size() > 1024 + kMetaHeaderV29Size &&
+         validate_meta_header_v29(
+             *reinterpret_cast<MetaHeaderV29 *>(g_meta_file_cache.data() + 1024),
+             g_meta_file_cache.size() - 1024))) {
+        metaRemote = start;
+        metaSize = blob_need_v29(*reinterpret_cast<MetaHeaderV29 *>(g_meta_file_cache.data()));
+        g_meta_file_header_off = (version == 1024) ? 1024 : 0;
+        return true;
+    }
+    g_meta_file_cache.clear();
+    return false;
+}
+
 static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found) {
     if (len < kMetaHeaderV29Size) return false;
     constexpr size_t kMaxScan = 32 * 1024 * 1024;
@@ -745,6 +792,20 @@ static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found
     for (size_t off = 0; off + kMetaHeaderV29Size <= len; off += step) {
         const size_t readSz = std::min(chunk.size(), len - off);
         if (!mem_read(pid, start + off, chunk.data(), readSz)) continue;
+        if (readSz >= 8) {
+            uint32_t sanity = 0;
+            int32_t version = 0;
+            std::memcpy(&sanity, chunk.data(), sizeof(sanity));
+            std::memcpy(&version, chunk.data() + 4, sizeof(version));
+            if (sanity == kMetaSanity && version == 1024 && off + 4755456 <= len) {
+                uintptr_t remote = 0;
+                size_t sz = 0;
+                if (try_region_mlbb_v1024(pid, start + off, len - off, remote, sz)) {
+                    found = remote;
+                    return true;
+                }
+            }
+        }
         size_t rel = 0;
         if (scan_bytes_for_header(chunk.data(), readSz, rel)) {
             found = start + off + rel;

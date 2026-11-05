@@ -50,4 +50,6 @@ bool remote_il2cpp_session_invoke(RemoteSession &s, pid_t pid, uintptr_t exportA
 uintptr_t remote_il2cpp_normalize_domain(pid_t pid, uintptr_t domain);
 bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &assembliesOut,
                                        size_t &countOut);
+/** Slow scan of heap for Il2CppAssembly* runs; use after IL2CPP API fails. */
+bool remote_il2cpp_read_assemblies_heuristic(pid_t pid, uintptr_t &assembliesOut, size_t &countOut);
 void remote_il2cpp_invalidate_cache(pid_t pid);

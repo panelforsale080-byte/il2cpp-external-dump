@@ -469,6 +469,7 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
     uintptr_t sizeSlot = ctx.scratch(8);
     uintptr_t assemblies = 0;
     size_t asmCount = 0;
+    logf("probing domain layout (fast)…");
     if (remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
         logf("assemblies from memory (mlbb-pure / conRent) count=%zu", asmCount);
     else if (liblogic) {
@@ -479,17 +480,24 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
     }
     if (asmCount == 0) {
         if (ctx.sym("il2cpp_thread_attach")) {
+            logf("il2cpp_thread_attach…");
             uintptr_t thr = 0;
             ctx.call1("il2cpp_thread_attach", domain, thr);
             logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,
                  (unsigned long long)thr);
         }
+        logf("il2cpp_domain_get_assemblies…");
         const bool apiAsm =
             ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) && assemblies;
         if (apiAsm) ctx.readMem(sizeSlot, &asmCount, sizeof(asmCount));
-        if ((!apiAsm || asmCount == 0) &&
+        if (apiAsm && asmCount > 0)
+            logf("assemblies from API count=%zu", asmCount);
+        if (asmCount == 0 &&
             remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
             logf("assemblies from memory retry count=%zu", asmCount);
+        if (asmCount == 0 &&
+            remote_il2cpp_read_assemblies_heuristic(ctx.pid, assemblies, asmCount) && asmCount > 0)
+            logf("assemblies from heuristic count=%zu", asmCount);
     }
     if (!assemblies || asmCount == 0) {
         logf("ERROR: no assemblies (ptr=0x%llx count=%zu)", (unsigned long long)assemblies, asmCount);
