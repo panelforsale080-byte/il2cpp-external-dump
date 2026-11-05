@@ -60,12 +60,21 @@ bool proc_maps_has_il2cpp(pid_t pid) {
     return false;
 }
 
+static void sanitize_label(char *out, size_t outCap) {
+    if (!out || !outCap) return;
+    for (size_t i = 0; out[i] && i + 1 < outCap; ++i) {
+        const unsigned char c = static_cast<unsigned char>(out[i]);
+        if (c < 0x20 || c == 0x7f) out[i] = ' ';
+    }
+}
+
 void proc_format_cmdline(pid_t pid, char *out, size_t outCap) {
     if (!out || !outCap) return;
     std::string label = read_cmdline(pid);
     if (label.empty()) label = read_comm(pid);
-    if (label.empty()) label = "pid:" + std::to_string(pid);
+    if (label.empty()) label = "unknown";
     std::snprintf(out, outCap, "%s", label.c_str());
+    sanitize_label(out, outCap);
 }
 
 size_t proc_list_all(ProcCandidate *out, size_t maxOut) {

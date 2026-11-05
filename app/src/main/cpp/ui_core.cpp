@@ -33,6 +33,8 @@ static ProcCandidate g_procs[256];
 static size_t g_procCount = 0;
 static int g_selected = -1;
 static pid_t g_selectedPid = 0;
+static int g_manualPid = 0;
+static bool g_useManualPid = false;
 
 static std::atomic<bool> g_dumpRunning{false};
 static std::atomic<float> g_dumpProgress{0.f};
@@ -187,42 +189,59 @@ static void draw_ui() {
     ImGui::InputTextWithHint("##q", "Search package / process…", g_search, sizeof(g_search));
     if (ImGui::IsItemDeactivatedAfterEdit()) refresh_process_list();
 
-    const float listH = display.y * 0.32f;
+    const float listH = display.y * 0.30f;
     ImGui::BeginChild("plist", ImVec2(-1, listH), true);
-    ImGuiListClipper clipper;
-    clipper.Begin((int)g_procCount);
-    while (clipper.Step()) {
-        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
-            const auto &p = g_procs[row];
-            const bool sel = g_selected == row;
-            ImGui::PushID(row);
-            if (p.hasIl2Cpp) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.9f, 0.75f, 1.f));
-            char line[360];
-            std::snprintf(line, sizeof(line), "[%d]  %s", (int)p.pid, p.cmdline);
-            if (ImGui::Selectable(line, sel, 0, ImVec2(-1, 0))) {
-                g_selected = row;
-                g_selectedPid = p.pid;
-            }
-            if (p.hasIl2Cpp) ImGui::PopStyleColor();
-            ImGui::PopID();
+
+    for (size_t row = 0; row < g_procCount; ++row) {
+        const auto &p = g_procs[row];
+        const bool sel = !g_useManualPid && g_selected == (int)row;
+        ImGui::PushID((int)p.pid);
+
+        char label[384];
+        const char *name = p.cmdline[0] ? p.cmdline : "(no name)";
+        std::snprintf(label, sizeof(label), "%-7d  %s%s###r%zu", (int)p.pid, name,
+                      p.hasIl2Cpp ? "  · il2cpp" : "", row);
+
+        if (p.hasIl2Cpp) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.45f, 0.92f, 0.72f, 1.f));
+        if (ImGui::Selectable(label, sel, 0, ImVec2(-1, 38.f))) {
+            g_useManualPid = false;
+            g_selected = (int)row;
+            g_selectedPid = p.pid;
         }
+        if (p.hasIl2Cpp) ImGui::PopStyleColor();
+        ImGui::PopID();
     }
+
     if (g_procCount == 0) {
         ImGui::TextColored(ImVec4(1.f, 0.55f, 0.4f, 1.f), "Walang process sa listahan");
         ImGui::TextWrapped(
-            "1) I-Refresh  2) I-off 'IL2CPP only'  3) Buksan target game  "
-            "4) Kung empty pa rin — root (para makita ibang app / maps)");
+            "GSpace/virtual: i-install dumper at game sa same space. "
+            "Root = makita lahat ng app sa device.");
     }
     ImGui::EndChild();
 
+    ImGui::SetNextItemWidth(120.f);
+    ImGui::InputInt("Manual PID", &g_manualPid);
+    ImGui::SameLine();
+    if (ImGui::Button("Use PID")) {
+        if (g_manualPid > 0 && proc_alive((pid_t)g_manualPid)) {
+            g_useManualPid = true;
+            g_selected = -1;
+            g_selectedPid = (pid_t)g_manualPid;
+            ui_log("[proc] manual PID %d", g_manualPid);
+        } else {
+            ui_log("[proc] invalid PID %d", g_manualPid);
+        }
+    }
+
     ImGui::Spacing();
     ImGui::BeginChild("status", ImVec2(-1, 88), true);
-    if (g_selected >= 0 && g_selected < (int)g_procCount) {
-        const auto &p = g_procs[g_selected];
-        ImGui::Text("Target PID %d", (int)p.pid);
-        ImGui::TextWrapped("%s", p.cmdline);
-        if (!proc_probe_read(p.pid))
-            ImGui::TextColored(ImVec4(1.f, 0.42f, 0.38f, 1.f), "Cannot read memory — enable root");
+    if (g_selectedPid > 0 && (g_useManualPid || (g_selected >= 0 && g_selected < (int)g_procCount))) {
+        ImGui::Text("Target PID %d%s", (int)g_selectedPid, g_useManualPid ? " (manual)" : "");
+        if (!g_useManualPid && g_selected >= 0 && g_selected < (int)g_procCount)
+            ImGui::TextWrapped("%s", g_procs[g_selected].cmdline);
+        if (!proc_probe_read(g_selectedPid))
+            ImGui::TextColored(ImVec4(1.f, 0.42f, 0.38f, 1.f), "Cannot read memory — root / same virtual app");
     } else {
         ImGui::TextDisabled("No process selected");
     }
@@ -232,13 +251,17 @@ static void draw_ui() {
     ImGui::TextWrapped("%s", g_dumpStatus);
     ImGui::EndChild();
 
-    const bool canDump = g_selected >= 0 && g_selected < (int)g_procCount && !g_dumpRunning.load();
+    const bool canDump = g_selectedPid > 0 && !g_dumpRunning.load();
     ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.18f, 0.52f, 0.95f, canDump ? 1.f : 0.35f));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(16.f, 14.f));
     ImGui::BeginDisabled(!canDump);
     if (ImGui::Button("Generate dump.cs", ImVec2(-1, 0.f))) {
-        const auto &p = g_procs[g_selected];
-        std::thread(run_dump_thread, p.pid, std::string(p.cmdline), g_filesDir + "/dump.cs").detach();
+        char cmd[280] = {};
+        if (!g_useManualPid && g_selected >= 0 && g_selected < (int)g_procCount)
+            std::snprintf(cmd, sizeof(cmd), "%s", g_procs[g_selected].cmdline);
+        else
+            std::snprintf(cmd, sizeof(cmd), "manual pid %d", (int)g_selectedPid);
+        std::thread(run_dump_thread, g_selectedPid, std::string(cmd), g_filesDir + "/dump.cs").detach();
     }
     ImGui::EndDisabled();
     ImGui::PopStyleVar();
