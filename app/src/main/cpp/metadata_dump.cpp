@@ -3,6 +3,7 @@
 #include "ui_log.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -244,6 +245,9 @@ static std::vector<uint8_t> g_meta_file_cache;
 static size_t g_meta_file_header_off = 0;
 
 static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector<uint8_t> &fileCopy);
+static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOut);
+static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found);
+static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaRemote);
 
 static void log_header_reject_v29(const MetaHeaderV29 &h, size_t blobLen, const char *why) {
     const int types = h.typeDefinitionsSize / (int)kTypeDefStrideV29;
