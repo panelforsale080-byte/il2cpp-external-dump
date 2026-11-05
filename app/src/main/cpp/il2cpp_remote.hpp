@@ -1,5 +1,6 @@
 #pragma once
 #include "dump_cs_engine.hpp"
+#include "remote_call.hpp"
 #include "remote_il2cpp.hpp"
 #include <sys/types.h>
 #include <string>
