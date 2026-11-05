@@ -274,7 +274,7 @@ bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::strin
                                     DumpLogFn log, DumpProgressFn progress) {
     uintptr_t metaRemote = 0;
     size_t metaSize = 0;
-    if (metadata_find(pid, info.base, metaRemote, metaSize) &&
+    if (metadata_find(pid, info.base, info.libPath, metaRemote, metaSize) &&
         metadata_dump_run(pid, info.base, metaRemote, metaSize, outPath, targetCmdline, log,
                           progress))
         return true;

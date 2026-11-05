@@ -6,6 +6,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <sstream>
 #include <string>
@@ -149,27 +150,97 @@ struct MetaView {
     std::vector<uint8_t> blob;
 };
 
-static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found) {
+static int64_t meta_now_ms() {
+    struct timespec ts {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static bool validate_meta_header(const MetaHeader &h) {
+    if (h.sanity != (int32_t)kMetaSanity) return false;
+    if (h.version < 16 || h.version > 35) return false;
+    if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 200000) return false;
+    if (h.imagesCount <= 0 || h.imagesCount > 4096) return false;
+    return true;
+}
+
+static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOut) {
+    offOut = 0;
     if (len < sizeof(MetaHeader)) return false;
-    const size_t step = 256;
-    std::vector<uint8_t> chunk(65536 + sizeof(MetaHeader));
+    const size_t step = 4096;
     for (size_t off = 0; off + sizeof(MetaHeader) <= len; off += step) {
-        const size_t readSz = std::min(chunk.size(), len - off);
-        if (!mem_read(pid, start + off, chunk.data(), readSz)) continue;
-        for (size_t i = 0; i + sizeof(MetaHeader) <= readSz; i += 4) {
-            int32_t sanity = 0;
-            std::memcpy(&sanity, chunk.data() + i, 4);
-            if (sanity != (int32_t)kMetaSanity) continue;
+        for (size_t i = off; i + sizeof(MetaHeader) <= len && i < off + step + 4096; i += 4) {
             MetaHeader h{};
-            std::memcpy(&h, chunk.data() + i, sizeof(h));
-            if (h.version < 16 || h.version > 35) continue;
-            if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 200000) continue;
-            if (h.imagesCount <= 0 || h.imagesCount > 4096) continue;
-            found = start + off + i;
+            std::memcpy(&h, data + i, sizeof(h));
+            if (!validate_meta_header(h)) continue;
+            offOut = i;
             return true;
         }
     }
     return false;
+}
+
+static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found) {
+    if (len < sizeof(MetaHeader)) return false;
+    constexpr size_t kMaxScan = 12 * 1024 * 1024;
+    len = std::min(len, kMaxScan);
+    const size_t step = 65536;
+    std::vector<uint8_t> chunk(step + sizeof(MetaHeader));
+    for (size_t off = 0; off + sizeof(MetaHeader) <= len; off += step) {
+        const size_t readSz = std::min(chunk.size(), len - off);
+        if (!mem_read(pid, start + off, chunk.data(), readSz)) continue;
+        size_t rel = 0;
+        if (scan_bytes_for_header(chunk.data(), readSz, rel)) {
+            found = start + off + rel;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector<uint8_t> &fileCopy) {
+    foundRemote = 0;
+    fileCopy.clear();
+    FILE *f = std::fopen(path, "rb");
+    if (!f) return false;
+    std::fseek(f, 0, SEEK_END);
+    long sz = std::ftell(f);
+    if (sz <= (long)sizeof(MetaHeader) || sz > 96 * 1024 * 1024) {
+        std::fclose(f);
+        return false;
+    }
+    std::fseek(f, 0, SEEK_SET);
+    fileCopy.resize((size_t)sz);
+    if (std::fread(fileCopy.data(), 1, fileCopy.size(), f) != fileCopy.size()) {
+        std::fclose(f);
+        fileCopy.clear();
+        return false;
+    }
+    std::fclose(f);
+    size_t off = 0;
+    if (!scan_bytes_for_header(fileCopy.data(), fileCopy.size(), off)) {
+        fileCopy.clear();
+        return false;
+    }
+    foundRemote = off;
+    return true;
+}
+
+static std::vector<uint8_t> g_meta_file_cache;
+static size_t g_meta_file_header_off = 0;
+
+static bool load_meta_view(pid_t pid, uintptr_t remote, MetaView &out);
+
+static bool load_meta_view_cached(MetaView &v, pid_t pid, uintptr_t metaRemote) {
+    if (!g_meta_file_cache.empty()) {
+        v.pid = pid;
+        v.base = metaRemote;
+        if (g_meta_file_header_off + sizeof(MetaHeader) > g_meta_file_cache.size()) return false;
+        std::memcpy(&v.hdr, g_meta_file_cache.data() + g_meta_file_header_off, sizeof(v.hdr));
+        v.blob.assign(g_meta_file_cache.begin() + g_meta_file_header_off, g_meta_file_cache.end());
+        return true;
+    }
+    return load_meta_view(pid, metaRemote, v);
 }
 
 static std::string read_meta_string(const MetaView &v, int32_t index) {
@@ -336,29 +407,49 @@ static std::string dump_type_block(const MetaView &v, int typeIdx) {
 
 } // namespace
 
-static bool map_worth_scanning(const MapsReg &m, uintptr_t il2cppBase) {
-    if (m.perms[0] != 'r') return false;
+static int map_scan_priority(const MapsReg &m, uintptr_t il2cppBase) {
+    if (m.perms[0] != 'r') return 0;
     const size_t len = (size_t)(m.end - m.start);
-    if (len < 32768 || len > 128 * 1024 * 1024) return false;
-    if (m.path.find("global-metadata") != std::string::npos) return true;
-    if (m.path.find("il2cpp") != std::string::npos) return true;
-    if (m.path.find("/data/app/") != std::string::npos) return true;
-    if (m.path.find(".apk") != std::string::npos) return true;
-    if (il2cppBase && m.start <= il2cppBase && m.end > il2cppBase) return true;
-    if (m.path.empty() && len >= 256 * 1024) return true;
-    return false;
+    if (len < 32768) return 0;
+    if (m.path.find("global-metadata") != std::string::npos) return 100;
+    if (m.path.find("il2cpp") != std::string::npos) return 95;
+    if (il2cppBase && m.start <= il2cppBase && m.end > il2cppBase) return 90;
+    if (m.path.empty() && len >= 512 * 1024 && len <= 32 * 1024 * 1024) return 70;
+    if (m.path.find(".apk") != std::string::npos && len <= 24 * 1024 * 1024) return 50;
+    return 0;
 }
 
-bool metadata_find(pid_t pid, uintptr_t il2cppBase, uintptr_t &metaRemote, size_t &metaSize) {
+bool metadata_find(pid_t pid, uintptr_t il2cppBase, const char *libPathHint, uintptr_t &metaRemote,
+                   size_t &metaSize) {
     metaRemote = 0;
     metaSize = 0;
+    g_meta_file_cache.clear();
+    g_meta_file_header_off = 0;
+
     std::vector<MapsReg> maps;
     if (!mem_maps(pid, maps)) return false;
 
-    int scanned = 0;
+    std::vector<std::pair<int, const MapsReg *>> ranked;
     for (const auto &m : maps) {
-        if (!map_worth_scanning(m, il2cppBase)) continue;
+        const int p = map_scan_priority(m, il2cppBase);
+        if (p > 0) ranked.push_back({p, &m});
+    }
+    std::sort(ranked.begin(), ranked.end(),
+              [](const auto &a, const auto &b) { return a.first > b.first; });
+
+    ui_log("[metadata] scanning %zu candidate maps…", ranked.size());
+    const int64_t deadline = meta_now_ms() + 10000;
+    int scanned = 0;
+    for (const auto &entry : ranked) {
+        if (meta_now_ms() > deadline) {
+            ui_log("[metadata] scan time limit (10s)");
+            break;
+        }
+        const MapsReg &m = *entry.second;
         ++scanned;
+        if (scanned <= 5 || scanned % 4 == 0)
+            ui_log("[metadata] map #%d pri=%d %s", scanned, entry.first,
+                   m.path.empty() ? "[anon]" : m.path.c_str());
         const size_t len = (size_t)(m.end - m.start);
         uintptr_t found = 0;
         if (!scan_region(pid, m.start, len, found)) continue;
@@ -368,8 +459,29 @@ bool metadata_find(pid_t pid, uintptr_t il2cppBase, uintptr_t &metaRemote, size_
                m.path.empty() ? "[anon]" : m.path.c_str());
         return true;
     }
-    ui_log("[metadata] not found (scanned %d maps, il2cpp base=0x%llx)", scanned,
-           (unsigned long long)il2cppBase);
+
+    if (libPathHint && libPathHint[0]) {
+        char procRoot[640];
+        std::snprintf(procRoot, sizeof(procRoot), "/proc/%d/root%s", (int)pid, libPathHint);
+        ui_log("[metadata] try file %s", procRoot);
+        uintptr_t off = 0;
+        if (scan_file_path(procRoot, off, g_meta_file_cache)) {
+            g_meta_file_header_off = off;
+            metaRemote = off;
+            metaSize = g_meta_file_cache.size() - off;
+            ui_log("[metadata] FAB11BAF in lib file offset 0x%llx", (unsigned long long)off);
+            return true;
+        }
+        if (scan_file_path(libPathHint, off, g_meta_file_cache)) {
+            g_meta_file_header_off = off;
+            metaRemote = off;
+            metaSize = g_meta_file_cache.size() - off;
+            ui_log("[metadata] FAB11BAF in lib path offset 0x%llx", (unsigned long long)off);
+            return true;
+        }
+    }
+
+    ui_log("[metadata] not found (%d maps scanned)", scanned);
     return false;
 }
 
@@ -377,7 +489,7 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
                        const std::string &outPath, const std::string &targetLabel, DumpLogFn log,
                        DumpProgressFn progress) {
     MetaView v{};
-    if (!load_meta_view(pid, metaRemote, v)) {
+    if (!load_meta_view_cached(v, pid, metaRemote)) {
         if (log) log("ERROR: metadata load failed");
         return false;
     }

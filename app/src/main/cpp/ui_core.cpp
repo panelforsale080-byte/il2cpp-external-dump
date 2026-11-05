@@ -165,7 +165,7 @@ static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath)
     size_t metaSize = 0;
     auto logFn = [](const char *msg) { ui_log("%s", msg); };
     auto progFn = [](const DumpProgress &p) { g_dumpProgress.store(p.progress); };
-    if (metadata_find(pid, il2.base, metaRemote, metaSize) &&
+    if (metadata_find(pid, il2.base, il2.libPath, metaRemote, metaSize) &&
         metadata_dump_run(pid, il2.base, metaRemote, metaSize, outPath, cmdline, logFn, progFn)) {
         std::snprintf(g_dumpStatus, sizeof(g_dumpStatus), "Saved: %s", outPath.c_str());
         ui_log("[dump] OK → %s", outPath.c_str());
