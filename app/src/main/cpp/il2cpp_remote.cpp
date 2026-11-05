@@ -2,6 +2,7 @@
 #include "mem.hpp"
 #include "remote_call.hpp"
 #include "remote_elf.hpp"
+#include "metadata_dump.hpp"
 #include "remote_il2cpp.hpp"
 #include "ui_log.hpp"
 #include <cstring>
@@ -222,6 +223,16 @@ void RemoteIl2CppExecutor::close() {
 
 bool RemoteIl2CppExecutor::run_dump(const std::string &outPath, const std::string &targetCmdline,
                                       DumpLogFn log, DumpProgressFn progress) {
+    uintptr_t metaRemote = 0;
+    size_t metaSize = 0;
+    if (metadata_find(pid, info.base, metaRemote, metaSize)) {
+        ui_log("[dump] conRent/Il2CppDumper path: global-metadata (no ptrace IL2 calls)");
+        if (metadata_dump_run(pid, info.base, metaRemote, metaSize, outPath, targetCmdline, log,
+                              progress))
+            return true;
+        ui_log("[dump] metadata dump failed — trying runtime ptrace APIs…");
+    }
+
     DumpCtx ctx{};
     ctx.pid = pid;
     ctx.il2cppBase = info.base;

@@ -15,6 +15,7 @@ add_library(Il2Dump SHARED
     clip_android.cpp
     il2cpp_remote.cpp
     dump_cs_engine.cpp
+    metadata_dump.cpp
     path_util.cpp
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
