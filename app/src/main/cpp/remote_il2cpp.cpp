@@ -375,6 +375,58 @@ static bool assemblies_pair_valid(pid_t pid, uintptr_t arr, size_t n) {
     return true;
 }
 
+static bool il2cpp_image_name_ok(pid_t pid, uintptr_t image) {
+    if (!mem_ptr_ok(image)) return false;
+    uintptr_t nameP = 0;
+    if (!mem_read(pid, image, nameP) || !mem_ptr_ok(nameP)) return false;
+    char b[28] = {};
+    if (!mem_read(pid, nameP, b, sizeof(b) - 1)) return false;
+    return std::strstr(b, ".dll") != nullptr || std::strstr(b, "Assembly-") != nullptr;
+}
+
+static bool il2cpp_assembly_ptr_ok(pid_t pid, uintptr_t asmPtr) {
+    if (!mem_ptr_ok(asmPtr)) return false;
+    uintptr_t img = 0;
+    if (!mem_read(pid, asmPtr, img) || !mem_ptr_ok(img)) return false;
+    return il2cpp_image_name_ok(pid, img);
+}
+
+static bool find_assemblies_array_heuristic(pid_t pid, uintptr_t &assembliesOut, size_t &countOut) {
+    std::vector<MapsReg> maps;
+    if (!mem_maps(pid, maps)) return false;
+    size_t bestCount = 0;
+    uintptr_t bestArr = 0;
+    for (const auto &m : maps) {
+        if (m.perms[0] != 'r' || m.perms[1] != 'w') continue;
+        const std::string &p = m.path;
+        if (p.find("stack") != std::string::npos || p.find("dalvik") != std::string::npos) continue;
+        const size_t len = (size_t)(m.end - m.start);
+        if (len < 64 || len > 32 * 1024 * 1024) continue;
+        const size_t step = sizeof(uintptr_t);
+        for (size_t off = 0; off + step <= len; off += step) {
+            uintptr_t asm0 = 0;
+            if (!mem_read(pid, m.start + off, asm0) || !il2cpp_assembly_ptr_ok(pid, asm0)) continue;
+            size_t run = 1;
+            while (off + run * step + step <= len) {
+                uintptr_t asmN = 0;
+                if (!mem_read(pid, m.start + off + run * step, asmN) ||
+                    !il2cpp_assembly_ptr_ok(pid, asmN))
+                    break;
+                ++run;
+                if (run >= 64) break;
+            }
+            if (run >= 8 && run > bestCount) {
+                bestCount = run;
+                bestArr = m.start + off;
+            }
+        }
+    }
+    if (bestCount < 8) return false;
+    assembliesOut = bestArr;
+    countOut = bestCount;
+    return true;
+}
+
 bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &assembliesOut,
                                        size_t &countOut) {
     assembliesOut = 0;
@@ -382,7 +434,7 @@ bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &a
     if (!mem_ptr_ok(domain)) return false;
 
     auto try_pair = [&](uintptr_t base) -> bool {
-        for (size_t off = 0; off + 16 <= 0x400; off += 8) {
+        for (size_t off = 0; off + 16 <= 0x800; off += 8) {
             uintptr_t arr = 0;
             size_t n = 0;
             if (!mem_read(pid, base + off, arr)) continue;
@@ -400,6 +452,14 @@ bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &a
                 countOut = n;
                 return true;
             }
+            if (!mem_read(pid, base + off, &n32, sizeof(n32))) continue;
+            n = n32;
+            if (!mem_read(pid, base + off + 8, arr)) continue;
+            if (assemblies_pair_valid(pid, arr, n)) {
+                assembliesOut = arr;
+                countOut = n;
+                return true;
+            }
         }
         return false;
     };
@@ -411,7 +471,7 @@ bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &a
         domain = next;
         if (try_pair(domain)) return true;
     }
-    return false;
+    return find_assemblies_array_heuristic(pid, assembliesOut, countOut);
 }
 
 bool remote_il2cpp_domain_valid(pid_t pid, uintptr_t domain) {

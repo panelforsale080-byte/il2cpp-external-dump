@@ -478,7 +478,7 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
              peek[0], peek[1], peek[2], peek[3]);
     }
     if (asmCount == 0) {
-        if (!liblogic && ctx.sym("il2cpp_thread_attach")) {
+        if (ctx.sym("il2cpp_thread_attach")) {
             uintptr_t thr = 0;
             ctx.call1("il2cpp_thread_attach", domain, thr);
             logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,

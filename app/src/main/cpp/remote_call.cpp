@@ -26,34 +26,8 @@
 
 static std::mutex g_ptraceSessionMu;
 
-static pid_t pick_tracee_tid(pid_t pid) {
-    char path[64];
-    std::snprintf(path, sizeof(path), "/proc/%d/task", (int)pid);
-    DIR *dir = opendir(path);
-    if (!dir) return pid;
-    pid_t pick = pid;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != nullptr) {
-        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
-        const pid_t tid = (pid_t)std::strtol(ent->d_name, nullptr, 10);
-        char commPath[80];
-        std::snprintf(commPath, sizeof(commPath), "/proc/%d/task/%d/comm", (int)pid, (int)tid);
-        FILE *f = std::fopen(commPath, "r");
-        if (!f) continue;
-        char comm[64] = {};
-        if (std::fgets(comm, sizeof(comm), f)) {
-            if (std::strstr(comm, "UnityMain") || std::strstr(comm, "Main") ||
-                std::strstr(comm, "il2cpp")) {
-                pick = tid;
-                std::fclose(f);
-                break;
-            }
-        }
-        std::fclose(f);
-    }
-    closedir(dir);
-    return pick;
-}
+/** MLBB/GSpace: worker threads often reject SETREGSET; main tid matches mlbb-pure. */
+static pid_t pick_tracee_tid(pid_t pid) { return pid; }
 
 static struct user_pt_regs *saved_pt(RemoteSession &s) {
     return reinterpret_cast<struct user_pt_regs *>(s.savedRegs);
@@ -198,6 +172,24 @@ static uintptr_t trap_return_site(RemoteSession &s) {
     return p;
 }
 
+/** mlbb-pure style: LR=0, blocking wait (works when BRK trap SETREGSET fails). */
+static bool remote_session_call_direct(RemoteSession &s, uintptr_t func,
+                                       const std::vector<uintptr_t> &args, uintptr_t &ret_x0) {
+    ret_x0 = 0;
+    struct user_pt_regs work = *saved_pt(s);
+    for (size_t i = 0; i < args.size() && i < 8; ++i)
+        work.regs[i] = args[i];
+    work.pc = func;
+    work.regs[30] = 0;
+    if (!set_regs(s.tid, work)) return false;
+    ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
+    int st = 0;
+    waitpid(s.tid, &st, 0);
+    if (!get_regs(s.tid, work)) return false;
+    ret_x0 = (uintptr_t)work.regs[0];
+    return set_regs(s.tid, *saved_pt(s));
+}
+
 bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uintptr_t> &args,
                          uintptr_t &ret_x0) {
     ret_x0 = 0;
@@ -216,6 +208,7 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     work.pc = func;
     work.regs[30] = retTrap;
     if (!set_regs(s.tid, work)) {
+        if (remote_session_call_direct(s, func, args, ret_x0)) return true;
         std::snprintf(s.err, sizeof(s.err), "SETREGSET fail");
         return false;
     }

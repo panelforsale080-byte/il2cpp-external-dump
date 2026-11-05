@@ -516,17 +516,48 @@ static bool metadata_try_decrypt_file(std::vector<uint8_t> &buf) {
 
 static bool metadata_load_from_remote(pid_t pid, uintptr_t remote, uintptr_t &metaRemote,
                                       size_t &metaSize) {
+    uint32_t sanity = 0;
+    int32_t version = 0;
+    if (!mem_read(pid, remote, &sanity, sizeof(sanity)) ||
+        !mem_read(pid, remote + 4, &version, sizeof(version)))
+        return false;
+    size_t headerOff = 0;
+    if (sanity == kMetaSanity && version == 1024) {
+        headerOff = 1024;
+        if (!mem_read(pid, remote + headerOff, &sanity, sizeof(sanity)) ||
+            !mem_read(pid, remote + headerOff + 4, &version, sizeof(version)))
+            return false;
+    }
     MetaHeaderV29 h{};
-    if (!mem_read(pid, remote, &h, sizeof(h))) return false;
-    if (!validate_meta_header_v29(h, 64 * 1024 * 1024)) return false;
+    if (!mem_read(pid, remote + headerOff, &h, sizeof(h))) return false;
+    if (!validate_meta_header_v29(h, 64 * 1024 * 1024)) {
+        if (headerOff == 0 && sanity == kMetaSanity && version == 1024) {
+            constexpr size_t kProbe = 4755456;
+            g_meta_file_cache.resize(kProbe);
+            if (!mem_read(pid, remote, g_meta_file_cache.data(), kProbe)) {
+                g_meta_file_cache.clear();
+                return false;
+            }
+            MetaView probe{};
+            probe.blob = g_meta_file_cache;
+            if (metadata_try_decrypt_file(g_meta_file_cache) && meta_view_init_from_blob(probe)) {
+                g_meta_file_header_off = 0;
+                metaRemote = remote;
+                metaSize = g_meta_file_cache.size();
+                return true;
+            }
+            g_meta_file_cache.clear();
+        }
+        return false;
+    }
     const size_t need = blob_need_v29(h);
-    g_meta_file_cache.resize(need);
-    if (!mem_read(pid, remote, g_meta_file_cache.data(), need)) {
+    g_meta_file_cache.resize(need + headerOff);
+    if (!mem_read(pid, remote, g_meta_file_cache.data(), need + headerOff)) {
         g_meta_file_cache.clear();
         return false;
     }
-    g_meta_file_header_off = 0;
-    metaRemote = remote;
+    g_meta_file_header_off = headerOff;
+    metaRemote = remote + headerOff;
     metaSize = need;
     return true;
 }
@@ -607,13 +638,17 @@ static bool metadata_scan_runtime_decrypted(pid_t pid, uintptr_t il2cppBase, uin
         const std::string &p = m.path;
         if (p.find("stack") != std::string::npos || p.find("tls") != std::string::npos) continue;
         if (p.find(".bss") != std::string::npos && len < 3 * 1024 * 1024) continue;
-        int pri = 0;
-        if (p.empty() || p.find("[anon") != std::string::npos) pri += 50;
-        if (p.find("dalvik") != std::string::npos && p.find("stack") == std::string::npos) pri += 30;
+        if (p.find("/dev/") == 0 || p.find("dalvik") != std::string::npos) continue;
+        if (p.find("mali") != std::string::npos) continue;
+        const bool anonHeap =
+            p.empty() || p.find("[anon:") != std::string::npos || p.find("libc_malloc") != std::string::npos;
+        if (!anonHeap) continue;
+        if (m.perms[1] != 'w' && p.find("libc_malloc") == std::string::npos) continue;
+        int pri = 50;
+        if (p.find("libc_malloc") != std::string::npos) pri += 80;
         if (len >= 3 * 1024 * 1024 && len <= 8 * 1024 * 1024) pri += 90;
         const int64_t d = (int64_t)len - (int64_t)kMlbbMetaSizeHint;
         if (d >= -512 * 1024 && d <= 512 * 1024) pri += 120;
-        if (pri == 0) continue;
         ranked.push_back({pri, &m});
     }
     std::sort(ranked.begin(), ranked.end(),
