@@ -2,6 +2,7 @@
 #include "mem.hpp"
 #include "remote_elf.hpp"
 #include <cstring>
+#include <functional>
 #include <vector>
 
 namespace {

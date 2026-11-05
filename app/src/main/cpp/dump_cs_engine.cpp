@@ -1,6 +1,6 @@
 #include "dump_cs_engine.hpp"
 #include "Il2cpp/il2cpp-tabledefs.h"
-#include "Il2cpp/il2cpp-class.h"
+#include "Il2cpp/il2cpp_types_minimal.h"
 
 #include <algorithm>
 #include <cstdarg>
