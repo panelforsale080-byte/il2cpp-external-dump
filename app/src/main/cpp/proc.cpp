@@ -2,10 +2,21 @@
 #include "mem.hpp"
 #include <dirent.h>
 #include <unistd.h>
+#include <algorithm>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <string>
+#include <vector>
+
+static bool is_pid_dir(const char *name) {
+    if (!name || !*name) return false;
+    for (const char *p = name; *p; ++p) {
+        if (!std::isdigit(static_cast<unsigned char>(*p))) return false;
+    }
+    return true;
+}
 
 static std::string read_cmdline(pid_t pid) {
     std::ifstream f("/proc/" + std::to_string(pid) + "/cmdline", std::ios::binary);
@@ -17,40 +28,84 @@ static std::string read_cmdline(pid_t pid) {
     return all;
 }
 
-void proc_format_cmdline(pid_t pid, char *out, size_t outCap) {
-    if (!out || !outCap) return;
-    const std::string s = read_cmdline(pid);
-    std::snprintf(out, outCap, "%s", s.c_str());
+static std::string read_comm(pid_t pid) {
+    std::ifstream f("/proc/" + std::to_string(pid) + "/comm");
+    if (!f) return {};
+    std::string s;
+    std::getline(f, s);
+    while (!s.empty() && (s.back() == '\n' || s.back() == '\r')) s.pop_back();
+    return s;
+}
+
+static bool maps_line_il2cpp_hint(const std::string &line) {
+    if (line.find("il2cpp") != std::string::npos) return true;
+    if (line.find("liblogic") != std::string::npos) return true;
+    if (line.find("GameAssembly") != std::string::npos) return true;
+    if (line.find("libcsharp") != std::string::npos) return true;
+    if (line.find("global-metadata.dat") != std::string::npos) return true;
+    if (line.find("libunity") != std::string::npos && line.find(".so") != std::string::npos)
+        return true;
+    if (line.find("libmain.so") != std::string::npos && line.find("/data/app/") != std::string::npos)
+        return true;
+    return false;
 }
 
 bool proc_maps_has_il2cpp(pid_t pid) {
-    std::vector<MapsReg> maps;
-    if (!mem_maps(pid, maps)) return false;
-    for (const auto &m : maps) {
-        if (m.path.find("il2cpp") != std::string::npos) return true;
-        if (m.path.find("liblogic") != std::string::npos) return true;
-        if (m.path.find("GameAssembly") != std::string::npos) return true;
-        if (m.path.find("libcsharp") != std::string::npos) return true;
+    std::ifstream maps("/proc/" + std::to_string(pid) + "/maps");
+    if (!maps) return false;
+    std::string line;
+    while (std::getline(maps, line)) {
+        if (maps_line_il2cpp_hint(line)) return true;
     }
     return false;
+}
+
+void proc_format_cmdline(pid_t pid, char *out, size_t outCap) {
+    if (!out || !outCap) return;
+    std::string label = read_cmdline(pid);
+    if (label.empty()) label = read_comm(pid);
+    if (label.empty()) label = "pid:" + std::to_string(pid);
+    std::snprintf(out, outCap, "%s", label.c_str());
 }
 
 size_t proc_list_all(ProcCandidate *out, size_t maxOut) {
     if (!out || !maxOut) return 0;
     DIR *d = opendir("/proc");
     if (!d) return 0;
-    size_t n = 0;
+
+    std::vector<ProcCandidate> all;
+    all.reserve(512);
     struct dirent *e;
     while ((e = readdir(d)) != nullptr) {
-        if (e->d_name[0] < '1' || e->d_name[0] > '9') continue;
+        if (!is_pid_dir(e->d_name)) continue;
         const pid_t pid = (pid_t)std::atoi(e->d_name);
         if (pid <= 0) continue;
         if (kill(pid, 0) != 0) continue;
-        out[n].pid = pid;
-        proc_format_cmdline(pid, out[n].cmdline, sizeof(out[n].cmdline));
-        if (!out[n].cmdline[0]) continue;
-        out[n].hasIl2Cpp = proc_maps_has_il2cpp(pid);
-        if (++n >= maxOut) break;
+
+        ProcCandidate c{};
+        c.pid = pid;
+        proc_format_cmdline(pid, c.cmdline, sizeof(c.cmdline));
+        c.hasIl2Cpp = proc_maps_has_il2cpp(pid);
+        all.push_back(c);
+    }
+    closedir(d);
+
+    std::sort(all.begin(), all.end(), [](const ProcCandidate &a, const ProcCandidate &b) {
+        if (a.hasIl2Cpp != b.hasIl2Cpp) return a.hasIl2Cpp > b.hasIl2Cpp;
+        return a.pid < b.pid;
+    });
+
+    const size_t n = std::min(all.size(), maxOut);
+    for (size_t i = 0; i < n; ++i) out[i] = all[i];
+    return n;
+}
+
+size_t proc_list_scan_total() {
+    DIR *d = opendir("/proc");
+    if (!d) return 0;
+    size_t n = 0;
+    while (struct dirent *e = readdir(d)) {
+        if (is_pid_dir(e->d_name)) ++n;
     }
     closedir(d);
     return n;

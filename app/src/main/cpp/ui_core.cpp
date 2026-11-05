@@ -26,7 +26,7 @@ static std::mutex g_glMu;
 static const char *g_glslVersion = "#version 100";
 
 static bool g_logScrollBottom = true;
-static bool g_filterIl2CppOnly = true;
+static bool g_filterIl2CppOnly = false;
 static char g_search[128] = {};
 
 static ProcCandidate g_procs[256];
@@ -84,8 +84,12 @@ static void apply_theme() {
 }
 
 static void refresh_process_list() {
-    ProcCandidate tmp[256];
-    const size_t n = proc_list_all(tmp, 256);
+    ProcCandidate tmp[512];
+    const size_t n = proc_list_all(tmp, 512);
+    size_t il2Count = 0;
+    for (size_t i = 0; i < n; ++i)
+        if (tmp[i].hasIl2Cpp) ++il2Count;
+
     g_procCount = 0;
     const std::string needle = g_search;
     for (size_t i = 0; i < n && g_procCount < 256; ++i) {
@@ -103,7 +107,16 @@ static void refresh_process_list() {
             break;
         }
     }
-    ui_log("[proc] %zu listed (il2cpp filter=%s)", g_procCount, g_filterIl2CppOnly ? "on" : "off");
+    ui_log("[proc] scanned %zu PIDs, il2cpp-tagged %zu, showing %zu (filter=%s)",
+           n, il2Count, g_procCount, g_filterIl2CppOnly ? "IL2CPP only" : "all");
+    if (g_procCount == 0) {
+        if (g_filterIl2CppOnly && il2Count == 0)
+            ui_log("[proc] walang IL2CPP sa maps — i-off ang 'IL2CPP only' o gamit root + buksan game");
+        else if (n == 0)
+            ui_log("[proc] hindi mabasa ang /proc — kailangan normal Android app context");
+        else
+            ui_log("[proc] walang match sa search/filter — i-clear search o i-refresh");
+    }
 }
 
 static void run_dump_thread(pid_t pid, std::string cmdline, std::string outPath) {
@@ -194,8 +207,12 @@ static void draw_ui() {
             ImGui::PopID();
         }
     }
-    if (g_procCount == 0)
-        ImGui::TextDisabled("No processes — Refresh (open game first; root to see other apps)");
+    if (g_procCount == 0) {
+        ImGui::TextColored(ImVec4(1.f, 0.55f, 0.4f, 1.f), "Walang process sa listahan");
+        ImGui::TextWrapped(
+            "1) I-Refresh  2) I-off 'IL2CPP only'  3) Buksan target game  "
+            "4) Kung empty pa rin — root (para makita ibang app / maps)");
+    }
     ImGui::EndChild();
 
     ImGui::Spacing();
