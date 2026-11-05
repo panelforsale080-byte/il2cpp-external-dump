@@ -126,9 +126,9 @@ static bool getter_uses_bl(pid_t pid, uintptr_t func) {
     return false;
 }
 
-static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) {
+static bool domain_from_getter_depth(pid_t pid, uintptr_t func, uintptr_t &domainOut, int depth) {
     domainOut = 0;
-    if (!func) return false;
+    if (!func || depth > 2) return false;
     uint32_t ins[64] = {};
     if (!mem_read(pid, func, ins, sizeof(ins))) return false;
 
@@ -146,7 +146,7 @@ static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) 
             const int rd = (int)(w & 0x1fu);
             const int rn = (int)((w >> 5) & 0x1fu);
             uint64_t imm = (uint64_t)((w >> 10) & 0xFFFu);
-            if (w & (1u << 22)) imm |= 0xFFFFFFFFFFFFF000ULL;
+            if (w & (1u << 22)) imm <<= 12;
             if (rd < 31 && rn < 31) x[rd] = x[rn] + imm;
         }
         if ((w & 0xFFC00000u) == 0xF9400000u) {
@@ -158,7 +158,7 @@ static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) 
                 const uintptr_t addr = (uintptr_t)(x[rn] + off);
                 if (mem_read(pid, addr, ptr) && mem_ptr_ok(ptr)) {
                     x[rd] = ptr;
-                    if (domain_looks_valid(pid, ptr)) domainOut = ptr;
+                    if (!domainOut) domainOut = ptr;
                 }
             }
         }
@@ -166,7 +166,8 @@ static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) 
             probe_got_from_regs(pid, x, domainOut);
             const uintptr_t blt = decode_bl_target(w, pc);
             uintptr_t subDom = 0;
-            if (blt && domain_from_getter(pid, blt, subDom) && domain_looks_valid(pid, subDom))
+            if (blt && domain_from_getter_depth(pid, blt, subDom, depth + 1) &&
+                domain_looks_valid(pid, subDom))
                 domainOut = subDom;
         }
         if ((w & 0xFFFFFC1Fu) == 0xD65F0000u && (w & 0x1fu) == 0x1fu) {
@@ -177,7 +178,12 @@ static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) 
             }
         }
     }
-    return domainOut != 0 && domain_looks_valid(pid, domainOut);
+    probe_got_from_regs(pid, x, domainOut);
+    return domainOut != 0 && mem_ptr_ok(domainOut);
+}
+
+static bool domain_from_getter(pid_t pid, uintptr_t func, uintptr_t &domainOut) {
+    return domain_from_getter_depth(pid, func, domainOut, 0);
 }
 
 static bool module_like_il2cpp(const SoModule &m) {

@@ -1,5 +1,6 @@
 #include "remote_call.hpp"
 #include "mem.hpp"
+#include "ui_log.hpp"
 #include <cstring>
 #include <cstring>
 #include <algorithm>
@@ -38,16 +39,46 @@ static bool set_regs(pid_t tid, const struct user_pt_regs &regs) {
     return ptrace(PTRACE_SETREGSET, tid, (void *)NT_PRSTATUS, &iov) == 0;
 }
 
+static int64_t now_ms_monotonic() {
+    struct timespec ts {};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+static bool wait_pid_stopped(pid_t tid, int &st, int timeoutMs) {
+    const int64_t deadline = now_ms_monotonic() + timeoutMs;
+    while (now_ms_monotonic() < deadline) {
+        const pid_t w = waitpid(tid, &st, WNOHANG);
+        if (w == tid) return WIFSTOPPED(st);
+        if (w < 0 && errno != EINTR) return false;
+        usleep(5000);
+    }
+    ptrace(PTRACE_INTERRUPT, tid, nullptr, nullptr);
+    for (int i = 0; i < 80; ++i) {
+        const pid_t w = waitpid(tid, &st, WNOHANG);
+        if (w == tid && WIFSTOPPED(st)) return true;
+        usleep(10000);
+    }
+    return false;
+}
+
 static bool session_begin_locked(pid_t pid, RemoteSession &s) {
     s = RemoteSession{};
     s.pid = pid;
     s.tid = pick_tracee_tid(pid);
+    ui_log("[ptrace] attach tid=%d (pid=%d)", (int)s.tid, (int)pid);
     if (ptrace(PTRACE_ATTACH, s.tid, nullptr, nullptr) != 0) {
         std::snprintf(s.err, sizeof(s.err), "PTRACE_ATTACH: %s", std::strerror(errno));
+        ui_log("[ptrace] FAIL %s", s.err);
         return false;
     }
     int st = 0;
-    waitpid(s.tid, &st, 0);
+    if (!wait_pid_stopped(s.tid, st, 8000)) {
+        ptrace(PTRACE_DETACH, s.tid, nullptr, nullptr);
+        std::snprintf(s.err, sizeof(s.err), "attach timeout (root / same user?)");
+        ui_log("[ptrace] FAIL %s", s.err);
+        return false;
+    }
     auto *saved = saved_pt(s);
     if (!get_regs(s.tid, *saved)) {
         std::snprintf(s.err, sizeof(s.err), "GETREGSET fail");
@@ -56,6 +87,7 @@ static bool session_begin_locked(pid_t pid, RemoteSession &s) {
     }
     s.sp = saved->sp;
     s.attached = true;
+    ui_log("[ptrace] attached ok");
     return true;
 }
 

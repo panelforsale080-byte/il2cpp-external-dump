@@ -1,6 +1,8 @@
 #include "il2cpp_remote.hpp"
 #include "mem.hpp"
 #include "remote_elf.hpp"
+#include "remote_il2cpp.hpp"
+#include "ui_log.hpp"
 #include <cstring>
 #include <functional>
 #include <vector>
@@ -141,25 +143,30 @@ bool RemoteIl2CppExecutor::resolve_syms(char *err, size_t errCap) {
 bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
     close();
     pid = target;
+    remote_il2cpp_invalidate_cache(pid);
+    ui_log("[dump] scanning maps + symbols…");
     if (!remote_detect_il2cpp(pid, info)) {
         std::snprintf(err, errCap, "no IL2CPP module (il2cpp_domain_get export)");
         return false;
     }
-    if (!info.domain_ptr)
+    if (!info.domain_ptr || !remote_il2cpp_domain_valid(pid, info.domain_ptr))
         remote_refresh_domain_ptr(pid, info);
+    ui_log("[dump] domain* hint=0x%llx", (unsigned long long)info.domain_ptr);
+
     if (!remote_session_begin(pid, session_)) {
         std::snprintf(err, errCap, "%s", session_.err);
         return false;
     }
     sessionOpen_ = true;
     scratchSlot_ = 0;
+    ui_log("[dump] resolving export symbols…");
     if (!resolve_syms(err, errCap)) {
         close();
         return false;
     }
 
     auto probe_assemblies = [&](uintptr_t domain) -> bool {
-        if (!remote_il2cpp_domain_valid(pid, domain)) return false;
+        if (!mem_ptr_ok(domain)) return false;
         uintptr_t slot = scratch(8);
         uintptr_t arr = 0;
         if (!call2("il2cpp_domain_get_assemblies", domain, slot, arr) || !arr) return false;
@@ -168,17 +175,21 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
         return n > 0;
     };
 
-    if (info.domain_ptr && probe_assemblies(info.domain_ptr)) return true;
+    if (info.domain_ptr && probe_assemblies(info.domain_ptr)) {
+        ui_log("[dump] domain ok (assemblies probe)");
+        return true;
+    }
 
+    ui_log("[dump] live domain_get (BL targets)…");
     uintptr_t live = 0;
     if (remote_il2cpp_session_call_domain_get(session_, pid, sym("il2cpp_domain_get"), live) &&
         probe_assemblies(live)) {
         info.domain_ptr = live;
+        ui_log("[dump] domain ok live=0x%llx", (unsigned long long)live);
         return true;
     }
-    if (live && remote_il2cpp_domain_valid(pid, live)) info.domain_ptr = live;
-    else if (!info.domain_ptr || !remote_il2cpp_domain_valid(pid, info.domain_ptr))
-        info.domain_ptr = live;
+    if (live && mem_ptr_ok(live)) info.domain_ptr = live;
+    ui_log("[dump] open done domain=0x%llx", (unsigned long long)info.domain_ptr);
     return true;
 }
 
