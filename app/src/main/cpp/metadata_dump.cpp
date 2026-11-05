@@ -15,9 +15,83 @@
 namespace {
 
 constexpr uint32_t kMetaSanity = 0xFAB11BAF;
+constexpr size_t kTypeDefStrideV29 = 0x58;
+constexpr size_t kMethodDefStrideV31 = 0x24;
+constexpr size_t kMethodDefStrideV29 = 0x20;
+constexpr size_t kImageDefStrideV24 = 0x28;
+constexpr size_t kFieldDefStrideV19 = 12;
+constexpr size_t kParamDefStrideV25 = 12;
+constexpr size_t kMetaHeaderV29Size = 256;
 
 #pragma pack(push, 1)
-struct MetaHeader {
+struct MetaHeaderV29 {
+    uint32_t sanity;
+    int32_t version;
+    uint32_t stringLiteralOffset;
+    int32_t stringLiteralSize;
+    uint32_t stringLiteralDataOffset;
+    int32_t stringLiteralDataSize;
+    uint32_t stringOffset;
+    int32_t stringSize;
+    uint32_t eventsOffset;
+    int32_t eventsSize;
+    uint32_t propertiesOffset;
+    int32_t propertiesSize;
+    uint32_t methodsOffset;
+    int32_t methodsSize;
+    uint32_t parameterDefaultValuesOffset;
+    int32_t parameterDefaultValuesSize;
+    uint32_t fieldDefaultValuesOffset;
+    int32_t fieldDefaultValuesSize;
+    uint32_t fieldAndParameterDefaultValueDataOffset;
+    int32_t fieldAndParameterDefaultValueDataSize;
+    int32_t fieldMarshaledSizesOffset;
+    int32_t fieldMarshaledSizesSize;
+    uint32_t parametersOffset;
+    int32_t parametersSize;
+    uint32_t fieldsOffset;
+    int32_t fieldsSize;
+    uint32_t genericParametersOffset;
+    int32_t genericParametersSize;
+    uint32_t genericParameterConstraintsOffset;
+    int32_t genericParameterConstraintsSize;
+    uint32_t genericContainersOffset;
+    int32_t genericContainersSize;
+    uint32_t nestedTypesOffset;
+    int32_t nestedTypesSize;
+    uint32_t interfacesOffset;
+    int32_t interfacesSize;
+    uint32_t vtableMethodsOffset;
+    int32_t vtableMethodsSize;
+    int32_t interfaceOffsetsOffset;
+    int32_t interfaceOffsetsSize;
+    uint32_t typeDefinitionsOffset;
+    int32_t typeDefinitionsSize;
+    uint32_t imagesOffset;
+    int32_t imagesSize;
+    uint32_t assembliesOffset;
+    int32_t assembliesSize;
+    uint32_t fieldRefsOffset;
+    int32_t fieldRefsSize;
+    int32_t referencedAssembliesOffset;
+    int32_t referencedAssembliesSize;
+    uint32_t attributeDataOffset;
+    int32_t attributeDataSize;
+    uint32_t attributeDataRangeOffset;
+    int32_t attributeDataRangeSize;
+    int32_t unresolvedVirtualCallParameterTypesOffset;
+    int32_t unresolvedVirtualCallParameterTypesSize;
+    int32_t unresolvedVirtualCallParameterRangesOffset;
+    int32_t unresolvedVirtualCallParameterRangesSize;
+    int32_t windowsRuntimeTypeNamesOffset;
+    int32_t windowsRuntimeTypeNamesSize;
+    int32_t windowsRuntimeStringsOffset;
+    int32_t windowsRuntimeStringsSize;
+    int32_t exportedTypeDefinitionsOffset;
+    int32_t exportedTypeDefinitionsSize;
+};
+
+struct MetaHeaderLegacy {
     int32_t sanity;
     int32_t version;
     int32_t stringLiteralOffset;
@@ -64,36 +138,12 @@ struct MetaHeader {
     int32_t imagesCount;
     int32_t assembliesOffset;
     int32_t assembliesCount;
-    int32_t metadataUsageListsOffset;
-    int32_t metadataUsageListsCount;
-    int32_t metadataUsagePairsOffset;
-    int32_t metadataUsagePairsCount;
-    int32_t fieldRefsOffset;
-    int32_t fieldRefsCount;
-    int32_t referencedAssembliesOffset;
-    int32_t referencedAssembliesCount;
-    int32_t attributesInfoOffset;
-    int32_t attributesInfoCount;
-    int32_t attributeTypesOffset;
-    int32_t attributeTypesCount;
-    int32_t unresolvedVirtualCallParameterTypesOffset;
-    int32_t unresolvedVirtualCallParameterTypesCount;
-    int32_t unresolvedVirtualCallParameterRangesOffset;
-    int32_t unresolvedVirtualCallParameterRangesCount;
-    int32_t windowsRuntimeTypeNamesOffset;
-    int32_t windowsRuntimeTypeNamesSize;
-    int32_t exportedTypeDefinitionsOffset;
-    int32_t exportedTypeDefinitionsCount;
-    int32_t typesOffset;
-    int32_t typesCount;
 };
-#pragma pack(pop)
 
-struct TypeDef {
-    int32_t nameIndex;
-    int32_t namespaceIndex;
+struct TypeDefV29 {
+    uint32_t nameIndex;
+    uint32_t namespaceIndex;
     int32_t byvalTypeIndex;
-    int32_t byrefTypeIndex;
     int32_t declaringTypeIndex;
     int32_t parentIndex;
     int32_t elementTypeIndex;
@@ -119,16 +169,11 @@ struct TypeDef {
     uint32_t token;
 };
 
-struct FieldDef {
-    int32_t nameIndex;
-    int32_t typeIndex;
-    uint32_t token;
-};
-
-struct MethodDef {
-    int32_t nameIndex;
+struct MethodDefV31 {
+    uint32_t nameIndex;
     int32_t declaringType;
     int32_t returnType;
+    int32_t returnParameterToken;
     int32_t parameterStart;
     int32_t genericContainerIndex;
     uint32_t token;
@@ -138,23 +183,54 @@ struct MethodDef {
     uint16_t parameterCount;
 };
 
-struct ParamDef {
-    int32_t nameIndex;
+struct FieldDefV19 {
+    uint32_t nameIndex;
+    int32_t typeIndex;
+    uint32_t token;
+};
+
+struct ParamDefV25 {
+    uint32_t nameIndex;
     uint32_t token;
     int32_t typeIndex;
 };
 
-struct ImageDef {
-    int32_t nameIndex;
+struct ImageDefV24 {
+    uint32_t nameIndex;
     int32_t assemblyIndex;
     int32_t typeStart;
     uint32_t typeCount;
+    int32_t exportedTypeStart;
+    uint32_t exportedTypeCount;
+    int32_t entryPointIndex;
+    uint32_t token;
+    int32_t customAttributeStart;
+    uint32_t customAttributeCount;
 };
+#pragma pack(pop)
 
 struct MetaView {
     pid_t pid = 0;
     uintptr_t base = 0;
-    MetaHeader hdr{};
+    int32_t version = 0;
+    bool headerV29 = false;
+    uint32_t stringOffset = 0;
+    int32_t stringSize = 0;
+    uint32_t typeDefinitionsOffset = 0;
+    int32_t typeDefinitionsSize = 0;
+    int32_t typeDefinitionsCount = 0;
+    size_t typeDefStride = kTypeDefStrideV29;
+    uint32_t methodsOffset = 0;
+    int32_t methodsSize = 0;
+    size_t methodStride = kMethodDefStrideV31;
+    uint32_t fieldsOffset = 0;
+    int32_t fieldsSize = 0;
+    uint32_t parametersOffset = 0;
+    int32_t parametersSize = 0;
+    uint32_t imagesOffset = 0;
+    int32_t imagesSize = 0;
+    int32_t imageCount = 0;
+    size_t imageStride = kImageDefStrideV24;
     std::vector<uint8_t> blob;
 };
 
@@ -169,35 +245,127 @@ static size_t g_meta_file_header_off = 0;
 
 static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector<uint8_t> &fileCopy);
 
-static void log_header_reject(const MetaHeader &h, size_t blobLen, const char *why) {
-    ui_log("[metadata] header reject (%s) v=%d types=%d tdo=%d imgs=%d blob=%zu", why, h.version,
-           h.typeDefinitionsCount, h.typeDefinitionsOffset, h.imagesCount, blobLen);
+static void log_header_reject_v29(const MetaHeaderV29 &h, size_t blobLen, const char *why) {
+    const int types = h.typeDefinitionsSize / (int)kTypeDefStrideV29;
+    ui_log("[metadata] header reject (%s) v=%d typeSz=%d tdo=%u imgsSz=%d (~%d types) blob=%zu",
+           why, h.version, h.typeDefinitionsSize, h.typeDefinitionsOffset, h.imagesSize, types,
+           blobLen);
 }
 
-static bool validate_meta_header(const MetaHeader &h, size_t blobLen = 0) {
+static bool section_in_blob(uint32_t off, int32_t sz, size_t blobLen) {
+    if (off == 0 || sz <= 0) return true;
+    if ((size_t)off >= blobLen) return false;
+    return (size_t)off + (size_t)sz <= blobLen;
+}
+
+static bool validate_meta_header_v29(const MetaHeaderV29 &h, size_t blobLen) {
+    if (h.sanity != kMetaSanity) return false;
+    if (h.version < 29 || h.version > 31) return false;
+    if (h.typeDefinitionsSize <= 0 || h.typeDefinitionsSize % (int32_t)kTypeDefStrideV29 != 0)
+        return false;
+    if (h.typeDefinitionsOffset == 0) return false;
+    if (!section_in_blob(h.typeDefinitionsOffset, h.typeDefinitionsSize, blobLen)) return false;
+    if (h.stringOffset == 0 || !section_in_blob(h.stringOffset, h.stringSize, blobLen)) return false;
+    if (h.methodsSize > 0 && h.methodsSize % (int32_t)(h.version >= 31 ? kMethodDefStrideV31
+                                                                               : kMethodDefStrideV29) != 0)
+        return false;
+    if (h.imagesSize > 0 && h.imagesSize % (int32_t)kImageDefStrideV24 != 0) return false;
+    return true;
+}
+
+static bool validate_meta_header_legacy(const MetaHeaderLegacy &h, size_t blobLen) {
     if (h.sanity != (int32_t)kMetaSanity) return false;
-    if (h.version < 1 || h.version > 999) return false;
+    if (h.version < 16 || h.version >= 29) return false;
     if (h.typeDefinitionsCount <= 0 || h.typeDefinitionsCount > 500000) return false;
     if (h.typeDefinitionsOffset <= 0) return false;
-    if (blobLen > 0) {
-        if ((size_t)h.typeDefinitionsOffset >= blobLen) return false;
-        if (h.stringOffset > 0 && (size_t)h.stringOffset >= blobLen) return false;
-    }
+    if (blobLen > 0 && (size_t)h.typeDefinitionsOffset >= blobLen) return false;
     if (h.imagesCount < 0 || h.imagesCount > 65535) return false;
     return true;
 }
 
-static bool try_accept_header_at(const uint8_t *data, size_t len, size_t off, size_t &offOut) {
-    if (off + sizeof(MetaHeader) > len) return false;
-    MetaHeader h{};
-    std::memcpy(&h, data + off, sizeof(h));
-    if (h.sanity != (int32_t)kMetaSanity) return false;
-    if (validate_meta_header(h, len)) {
-        offOut = off;
-        return true;
+static bool meta_view_apply_v29(MetaView &v, const MetaHeaderV29 &h) {
+    v.version = h.version;
+    v.headerV29 = true;
+    v.stringOffset = h.stringOffset;
+    v.stringSize = h.stringSize;
+    v.typeDefinitionsOffset = h.typeDefinitionsOffset;
+    v.typeDefinitionsSize = h.typeDefinitionsSize;
+    v.typeDefinitionsCount = h.typeDefinitionsSize / (int32_t)kTypeDefStrideV29;
+    v.typeDefStride = kTypeDefStrideV29;
+    v.methodsOffset = h.methodsOffset;
+    v.methodsSize = h.methodsSize;
+    v.methodStride = h.version >= 31 ? kMethodDefStrideV31 : kMethodDefStrideV29;
+    v.fieldsOffset = h.fieldsOffset;
+    v.fieldsSize = h.fieldsSize;
+    v.parametersOffset = h.parametersOffset;
+    v.parametersSize = h.parametersSize;
+    v.imagesOffset = h.imagesOffset;
+    v.imagesSize = h.imagesSize;
+    v.imageCount = h.imagesSize > 0 ? h.imagesSize / (int32_t)kImageDefStrideV24 : 0;
+    v.imageStride = kImageDefStrideV24;
+    return v.typeDefinitionsCount > 0;
+}
+
+static bool meta_view_apply_legacy(MetaView &v, const MetaHeaderLegacy &h) {
+    v.version = h.version;
+    v.headerV29 = false;
+    v.stringOffset = (uint32_t)h.stringOffset;
+    v.stringSize = h.stringCount;
+    v.typeDefinitionsOffset = (uint32_t)h.typeDefinitionsOffset;
+    v.typeDefinitionsSize = h.typeDefinitionsCount * (int32_t)kTypeDefStrideV29;
+    v.typeDefinitionsCount = h.typeDefinitionsCount;
+    v.typeDefStride = kTypeDefStrideV29;
+    v.methodsOffset = (uint32_t)h.methodsOffset;
+    v.methodsSize = h.methodsCount * (int32_t)kMethodDefStrideV29;
+    v.methodStride = kMethodDefStrideV29;
+    v.fieldsOffset = (uint32_t)h.fieldsOffset;
+    v.fieldsSize = h.fieldsCount * (int32_t)kFieldDefStrideV19;
+    v.parametersOffset = (uint32_t)h.parametersOffset;
+    v.parametersSize = h.parametersCount * (int32_t)kParamDefStrideV25;
+    v.imagesOffset = (uint32_t)h.imagesOffset;
+    v.imagesSize = h.imagesCount * (int32_t)kImageDefStrideV24;
+    v.imageCount = h.imagesCount;
+    v.imageStride = kImageDefStrideV24;
+    return v.typeDefinitionsCount > 0;
+}
+
+static bool meta_view_init_from_blob(MetaView &v) {
+    if (v.blob.size() < 8) return false;
+    int32_t version = 0;
+    std::memcpy(&version, v.blob.data() + 4, sizeof(version));
+    if (version >= 29) {
+        if (v.blob.size() < kMetaHeaderV29Size) return false;
+        MetaHeaderV29 h{};
+        std::memcpy(&h, v.blob.data(), sizeof(h));
+        if (!validate_meta_header_v29(h, v.blob.size())) return false;
+        return meta_view_apply_v29(v, h);
     }
-    if (off == 0) log_header_reject(h, len, "strict");
-    return false;
+    if (v.blob.size() < sizeof(MetaHeaderLegacy)) return false;
+    MetaHeaderLegacy h{};
+    std::memcpy(&h, v.blob.data(), sizeof(h));
+    if (!validate_meta_header_legacy(h, v.blob.size())) return false;
+    return meta_view_apply_legacy(v, h);
+}
+
+static bool try_accept_header_at(const uint8_t *data, size_t len, size_t off, size_t &offOut) {
+    if (off + 8 > len) return false;
+    uint32_t sanity = 0;
+    int32_t version = 0;
+    std::memcpy(&sanity, data + off, sizeof(sanity));
+    std::memcpy(&version, data + off + 4, sizeof(version));
+    if (sanity != kMetaSanity) return false;
+    MetaView tmp{};
+    tmp.blob.assign(data + off, data + len);
+    if (!meta_view_init_from_blob(tmp)) {
+        if (off == 0 && version >= 29 && len >= kMetaHeaderV29Size) {
+            MetaHeaderV29 h{};
+            std::memcpy(&h, data + off, sizeof(h));
+            log_header_reject_v29(h, len, "v29");
+        }
+        return false;
+    }
+    offOut = off;
+    return true;
 }
 
 static bool try_metadata_from_file_paths(pid_t pid, const std::string &mapPath, uintptr_t &metaRemote,
@@ -216,10 +384,11 @@ static bool try_metadata_from_file_paths(pid_t pid, const std::string &mapPath, 
         g_meta_file_header_off = fileOff;
         metaRemote = fileOff;
         metaSize = g_meta_file_cache.size() - fileOff;
-        MetaHeader hdr{};
-        std::memcpy(&hdr, g_meta_file_cache.data() + fileOff, sizeof(hdr));
-        ui_log("[metadata] FAB11BAF from %s (%s v=%d types=%d)", tag, p.c_str(), hdr.version,
-               hdr.typeDefinitionsCount);
+        MetaView mv{};
+        mv.blob = g_meta_file_cache;
+        if (!meta_view_init_from_blob(mv)) continue;
+        ui_log("[metadata] FAB11BAF from %s (%s v=%d types=%d)", tag, p.c_str(), mv.version,
+               mv.typeDefinitionsCount);
         return true;
     }
     return false;
@@ -227,11 +396,11 @@ static bool try_metadata_from_file_paths(pid_t pid, const std::string &mapPath, 
 
 static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOut) {
     offOut = 0;
-    if (len < sizeof(MetaHeader)) return false;
+    if (len < kMetaHeaderV29Size) return false;
     if (try_accept_header_at(data, len, 0, offOut)) return true;
     const size_t step = 4096;
-    for (size_t off = step; off + sizeof(MetaHeader) <= len; off += step) {
-        for (size_t i = off; i + sizeof(MetaHeader) <= len && i < off + step + 4096; i += 4) {
+    for (size_t off = step; off + kMetaHeaderV29Size <= len; off += step) {
+        for (size_t i = off; i + kMetaHeaderV29Size <= len && i < off + step + 4096; i += 4) {
             if (try_accept_header_at(data, len, i, offOut)) return true;
         }
     }
@@ -239,12 +408,12 @@ static bool scan_bytes_for_header(const uint8_t *data, size_t len, size_t &offOu
 }
 
 static bool scan_region(pid_t pid, uintptr_t start, size_t len, uintptr_t &found) {
-    if (len < sizeof(MetaHeader)) return false;
+    if (len < kMetaHeaderV29Size) return false;
     constexpr size_t kMaxScan = 12 * 1024 * 1024;
     len = std::min(len, kMaxScan);
     const size_t step = 65536;
-    std::vector<uint8_t> chunk(step + sizeof(MetaHeader));
-    for (size_t off = 0; off + sizeof(MetaHeader) <= len; off += step) {
+    std::vector<uint8_t> chunk(step + kMetaHeaderV29Size);
+    for (size_t off = 0; off + kMetaHeaderV29Size <= len; off += step) {
         const size_t readSz = std::min(chunk.size(), len - off);
         if (!mem_read(pid, start + off, chunk.data(), readSz)) continue;
         size_t rel = 0;
@@ -263,7 +432,7 @@ static bool scan_file_path(const char *path, uintptr_t &foundRemote, std::vector
     if (!f) return false;
     std::fseek(f, 0, SEEK_END);
     long sz = std::ftell(f);
-    if (sz <= (long)sizeof(MetaHeader) || sz > 128 * 1024 * 1024) {
+    if (sz <= (long)kMetaHeaderV29Size || sz > 128 * 1024 * 1024) {
         std::fclose(f);
         return false;
     }
@@ -293,19 +462,27 @@ static bool load_metadata_from_map(pid_t pid, const MapsReg &m, uintptr_t &metaR
     }
     size_t off = 0;
     if (!scan_bytes_for_header(g_meta_file_cache.data(), len, off)) {
-        MetaHeader peek{};
-        if (len >= sizeof(peek)) std::memcpy(&peek, g_meta_file_cache.data(), sizeof(peek));
-        ui_log("[metadata] no header in map (magic=%08x len=%zu)", (unsigned)peek.sanity, len);
-        if (peek.sanity == (int32_t)kMetaSanity) log_header_reject(peek, len, "map");
+        uint32_t sanity = 0;
+        if (len >= 4) std::memcpy(&sanity, g_meta_file_cache.data(), 4);
+        ui_log("[metadata] no header in map (magic=%08x len=%zu)", sanity, len);
+        if (sanity == kMetaSanity && len >= kMetaHeaderV29Size) {
+            MetaHeaderV29 peek{};
+            std::memcpy(&peek, g_meta_file_cache.data(), sizeof(peek));
+            log_header_reject_v29(peek, len, "map");
+        }
         g_meta_file_cache.clear();
         return false;
     }
     g_meta_file_header_off = off;
     metaRemote = m.start + off;
-    MetaHeader hdr{};
-    std::memcpy(&hdr, g_meta_file_cache.data() + off, sizeof(hdr));
-    ui_log("[metadata] loaded from map +0x%zx v=%d types=%d", off, hdr.version,
-           hdr.typeDefinitionsCount);
+    MetaView mv{};
+    mv.blob.assign(g_meta_file_cache.begin() + off, g_meta_file_cache.end());
+    if (!meta_view_init_from_blob(mv)) {
+        g_meta_file_cache.clear();
+        return false;
+    }
+    ui_log("[metadata] loaded from map +0x%zx v=%d types=%d (Il2Cpp v29+ size/count)", off,
+           mv.version, mv.typeDefinitionsCount);
     return true;
 }
 
@@ -315,18 +492,17 @@ static bool load_meta_view_cached(MetaView &v, pid_t pid, uintptr_t metaRemote) 
     if (!g_meta_file_cache.empty()) {
         v.pid = pid;
         v.base = metaRemote;
-        if (g_meta_file_header_off + sizeof(MetaHeader) > g_meta_file_cache.size()) return false;
-        std::memcpy(&v.hdr, g_meta_file_cache.data() + g_meta_file_header_off, sizeof(v.hdr));
         v.blob.assign(g_meta_file_cache.begin() + g_meta_file_header_off, g_meta_file_cache.end());
-        return true;
+        return meta_view_init_from_blob(v);
     }
     return load_meta_view(pid, metaRemote, v);
 }
 
 static std::string read_meta_string(const MetaView &v, int32_t index) {
-    if (index < 0 || index >= v.hdr.stringCount) return {};
-    const int32_t off = v.hdr.stringOffset + index;
+    if (index < 0) return {};
+    const int32_t off = (int32_t)v.stringOffset + index;
     if (off < 0 || (size_t)off >= v.blob.size()) return {};
+    if (v.stringSize > 0 && (size_t)off >= (size_t)v.stringOffset + (size_t)v.stringSize) return {};
     std::string s;
     for (size_t i = (size_t)off; i < v.blob.size(); ++i) {
         const char c = (char)v.blob[i];
@@ -346,10 +522,11 @@ struct Il2CppTypeRemote {
 #pragma pack(pop)
 
 static std::string type_def_name(const MetaView &v, int32_t typeDefIndex) {
-    if (typeDefIndex < 0 || typeDefIndex >= v.hdr.typeDefinitionsCount) return "object";
-    const size_t tdOff = (size_t)v.hdr.typeDefinitionsOffset + (size_t)typeDefIndex * sizeof(TypeDef);
-    if (tdOff + sizeof(TypeDef) > v.blob.size()) return "object";
-    TypeDef td{};
+    if (typeDefIndex < 0 || typeDefIndex >= v.typeDefinitionsCount) return "object";
+    const size_t tdOff =
+        (size_t)v.typeDefinitionsOffset + (size_t)typeDefIndex * v.typeDefStride;
+    if (tdOff + v.typeDefStride > v.blob.size()) return "object";
+    TypeDefV29 td{};
     std::memcpy(&td, v.blob.data() + tdOff, sizeof(td));
     const std::string ns = read_meta_string(v, td.namespaceIndex);
     const std::string nm = read_meta_string(v, td.nameIndex);
@@ -357,13 +534,8 @@ static std::string type_def_name(const MetaView &v, int32_t typeDefIndex) {
     return ns.empty() ? nm : ns + "." + nm;
 }
 
-static bool read_remote_type(const MetaView &v, int32_t typeIndex, Il2CppTypeRemote &t) {
-    if (typeIndex < 0 || v.hdr.typesOffset <= 0 || v.hdr.typesCount <= 0) return false;
-    if (typeIndex >= v.hdr.typesCount) return false;
-    const size_t off = (size_t)v.hdr.typesOffset + (size_t)typeIndex * sizeof(Il2CppTypeRemote);
-    if (off + sizeof(Il2CppTypeRemote) > v.blob.size()) return false;
-    std::memcpy(&t, v.blob.data() + off, sizeof(t));
-    return true;
+static bool read_remote_type(const MetaView &, int32_t, Il2CppTypeRemote &) {
+    return false;
 }
 
 static std::string type_name_from_type(const MetaView &v, int32_t typeIndex) {
@@ -394,33 +566,60 @@ static std::string type_name_from_type(const MetaView &v, int32_t typeIndex) {
     }
 }
 
-static bool load_meta_view(pid_t pid, uintptr_t remote, MetaView &out) {
-    MetaHeader hdr{};
-    if (!mem_read(pid, remote, &hdr, sizeof(hdr))) return false;
-    if (hdr.sanity != (int32_t)kMetaSanity) return false;
-    size_t need = 0;
-    auto bump = [&](int32_t off, int32_t cnt, size_t elem) {
-        if (off > 0 && cnt > 0) {
-            const size_t end = (size_t)off + (size_t)cnt * elem;
-            need = std::max(need, end);
-        }
+static size_t blob_need_v29(const MetaHeaderV29 &h) {
+    size_t need = kMetaHeaderV29Size;
+    auto bump = [&](uint32_t off, int32_t sz) {
+        if (off && sz > 0) need = std::max(need, (size_t)off + (size_t)sz);
     };
-    bump(hdr.stringOffset, hdr.stringCount, 64);
-    bump(hdr.typeDefinitionsOffset, hdr.typeDefinitionsCount, sizeof(TypeDef));
-    bump(hdr.methodsOffset, hdr.methodsCount, sizeof(MethodDef));
-    bump(hdr.fieldsOffset, hdr.fieldsCount, sizeof(FieldDef));
-    bump(hdr.parametersOffset, hdr.parametersCount, sizeof(ParamDef));
-    bump(hdr.imagesOffset, hdr.imagesCount, sizeof(ImageDef));
-    bump(hdr.typesOffset, hdr.typesCount, sizeof(Il2CppTypeRemote));
-    need = std::max(need, (size_t)hdr.stringOffset + (size_t)hdr.stringCount);
-    need = std::min(need, size_t(64 * 1024 * 1024));
-    if (need < sizeof(MetaHeader)) return false;
+    bump(h.stringLiteralOffset, h.stringLiteralSize);
+    bump(h.stringLiteralDataOffset, h.stringLiteralDataSize);
+    bump(h.stringOffset, h.stringSize);
+    bump(h.eventsOffset, h.eventsSize);
+    bump(h.propertiesOffset, h.propertiesSize);
+    bump(h.methodsOffset, h.methodsSize);
+    bump(h.parameterDefaultValuesOffset, h.parameterDefaultValuesSize);
+    bump(h.fieldDefaultValuesOffset, h.fieldDefaultValuesSize);
+    bump(h.fieldAndParameterDefaultValueDataOffset, h.fieldAndParameterDefaultValueDataSize);
+    bump((uint32_t)h.fieldMarshaledSizesOffset, h.fieldMarshaledSizesSize);
+    bump(h.parametersOffset, h.parametersSize);
+    bump(h.fieldsOffset, h.fieldsSize);
+    bump(h.genericParametersOffset, h.genericParametersSize);
+    bump(h.genericParameterConstraintsOffset, h.genericParameterConstraintsSize);
+    bump(h.genericContainersOffset, h.genericContainersSize);
+    bump(h.nestedTypesOffset, h.nestedTypesSize);
+    bump(h.interfacesOffset, h.interfacesSize);
+    bump(h.vtableMethodsOffset, h.vtableMethodsSize);
+    bump((uint32_t)h.interfaceOffsetsOffset, h.interfaceOffsetsSize);
+    bump(h.typeDefinitionsOffset, h.typeDefinitionsSize);
+    bump(h.imagesOffset, h.imagesSize);
+    bump(h.assembliesOffset, h.assembliesSize);
+    bump(h.fieldRefsOffset, h.fieldRefsSize);
+    bump((uint32_t)h.referencedAssembliesOffset, h.referencedAssembliesSize);
+    bump(h.attributeDataOffset, h.attributeDataSize);
+    bump(h.attributeDataRangeOffset, h.attributeDataRangeSize);
+    return std::min(need, size_t(128 * 1024 * 1024));
+}
+
+static bool load_meta_view(pid_t pid, uintptr_t remote, MetaView &out) {
+    MetaHeaderV29 h{};
+    if (!mem_read(pid, remote, &h, sizeof(h))) return false;
+    if (h.sanity != kMetaSanity) return false;
+    size_t need = kMetaHeaderV29Size;
+    if (h.version >= 29) {
+        if (!mem_read(pid, remote, &h, sizeof(h))) return false;
+        need = blob_need_v29(h);
+    } else {
+        MetaHeaderLegacy leg{};
+        if (!mem_read(pid, remote, &leg, sizeof(leg))) return false;
+        need = std::min((size_t)leg.stringOffset + (size_t)leg.stringCount,
+                        size_t(128 * 1024 * 1024));
+        need = std::max(need, sizeof(MetaHeaderLegacy));
+    }
     out.pid = pid;
     out.base = remote;
-    out.hdr = hdr;
     out.blob.resize(need);
     if (!mem_read(pid, remote, out.blob.data(), need)) return false;
-    return true;
+    return meta_view_init_from_blob(out);
 }
 
 static std::string visibility(uint32_t flags) {
@@ -434,9 +633,9 @@ static std::string visibility(uint32_t flags) {
 }
 
 static std::string dump_type_block(const MetaView &v, int typeIdx) {
-    const size_t tdOff = (size_t)v.hdr.typeDefinitionsOffset + (size_t)typeIdx * sizeof(TypeDef);
-    if (tdOff + sizeof(TypeDef) > v.blob.size()) return {};
-    TypeDef td{};
+    const size_t tdOff = (size_t)v.typeDefinitionsOffset + (size_t)typeIdx * v.typeDefStride;
+    if (tdOff + v.typeDefStride > v.blob.size()) return {};
+    TypeDefV29 td{};
     std::memcpy(&td, v.blob.data() + tdOff, sizeof(td));
     const std::string ns = read_meta_string(v, td.namespaceIndex);
     const std::string nm = read_meta_string(v, td.nameIndex);
@@ -452,9 +651,9 @@ static std::string dump_type_block(const MetaView &v, int typeIdx) {
 
     for (uint16_t fi = 0; fi < td.field_count; ++fi) {
         const int32_t fidx = td.fieldStart + fi;
-        const size_t fOff = (size_t)v.hdr.fieldsOffset + (size_t)fidx * sizeof(FieldDef);
-        if (fOff + sizeof(FieldDef) > v.blob.size()) continue;
-        FieldDef fd{};
+        const size_t fOff = (size_t)v.fieldsOffset + (size_t)fidx * kFieldDefStrideV19;
+        if (fOff + kFieldDefStrideV19 > v.blob.size()) continue;
+        FieldDefV19 fd{};
         std::memcpy(&fd, v.blob.data() + fOff, sizeof(fd));
         o << "\n\t" << type_name_from_type(v, fd.typeIndex) << " "
           << read_meta_string(v, fd.nameIndex) << "; // 0x0";
@@ -462,19 +661,20 @@ static std::string dump_type_block(const MetaView &v, int typeIdx) {
 
     for (uint16_t mi = 0; mi < td.method_count; ++mi) {
         const int32_t midx = td.methodStart + mi;
-        const size_t mOff = (size_t)v.hdr.methodsOffset + (size_t)midx * sizeof(MethodDef);
-        if (mOff + sizeof(MethodDef) > v.blob.size()) continue;
-        MethodDef md{};
-        std::memcpy(&md, v.blob.data() + mOff, sizeof(md));
+        const size_t mOff = (size_t)v.methodsOffset + (size_t)midx * v.methodStride;
+        if (mOff + v.methodStride > v.blob.size()) continue;
+        MethodDefV31 md{};
+        std::memset(&md, 0, sizeof(md));
+        std::memcpy(&md, v.blob.data() + mOff, v.methodStride);
         o << "\n\n\t// RVA: 0x0";
         if (md.flags & 0x0010) o << " | static";
         o << "\n\t" << type_name_from_type(v, md.returnType) << " "
           << read_meta_string(v, md.nameIndex) << "(";
         for (uint16_t pi = 0; pi < md.parameterCount; ++pi) {
             const int32_t pidx = md.parameterStart + pi;
-            const size_t pOff = (size_t)v.hdr.parametersOffset + (size_t)pidx * sizeof(ParamDef);
-            if (pOff + sizeof(ParamDef) > v.blob.size()) break;
-            ParamDef pd{};
+            const size_t pOff = (size_t)v.parametersOffset + (size_t)pidx * kParamDefStrideV25;
+            if (pOff + kParamDefStrideV25 > v.blob.size()) break;
+            ParamDefV25 pd{};
             std::memcpy(&pd, v.blob.data() + pOff, sizeof(pd));
             if (pi) o << ", ";
             o << type_name_from_type(v, pd.typeIndex) << " " << read_meta_string(v, pd.nameIndex);
@@ -596,8 +796,8 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
         if (log) log(buf);
     };
 
-    logf("metadata v%d types=%d images=%d (external / conRent-style)",
-         v.hdr.version, v.hdr.typeDefinitionsCount, v.hdr.imagesCount);
+    logf("metadata v%d types=%d images=%d (Il2CppDumper v29+ / conRent-style names)",
+         v.version, v.typeDefinitionsCount, v.imageCount);
 
     std::ofstream out(outPath, std::ios::trunc);
     if (!out.is_open()) {
@@ -611,22 +811,22 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
     out << "// NOTE: RVAs/field offsets need in-process il2cpp (conRent inject) for runtime values\n\n";
 
     int processed = 0;
-    const int total = v.hdr.typeDefinitionsCount;
+    const int total = v.typeDefinitionsCount;
     const auto dump_all_types = [&]() {
-        for (int ti = 0; ti < v.hdr.typeDefinitionsCount; ++ti) {
+        for (int ti = 0; ti < v.typeDefinitionsCount; ++ti) {
             out << dump_type_block(v, ti);
             ++processed;
         }
     };
-    for (int img = 0; img < v.hdr.imagesCount; ++img) {
-        const size_t iOff = (size_t)v.hdr.imagesOffset + (size_t)img * sizeof(ImageDef);
-        if (iOff + sizeof(ImageDef) > v.blob.size()) continue;
-        ImageDef id{};
+    for (int img = 0; img < v.imageCount; ++img) {
+        const size_t iOff = (size_t)v.imagesOffset + (size_t)img * v.imageStride;
+        if (iOff + v.imageStride > v.blob.size()) continue;
+        ImageDefV24 id{};
         std::memcpy(&id, v.blob.data() + iOff, sizeof(id));
         out << "// Image " << img << ": " << read_meta_string(v, id.nameIndex) << "\n";
         for (uint32_t t = 0; t < id.typeCount; ++t) {
             const int typeIdx = id.typeStart + (int32_t)t;
-            if (typeIdx < 0 || typeIdx >= v.hdr.typeDefinitionsCount) continue;
+            if (typeIdx < 0 || typeIdx >= v.typeDefinitionsCount) continue;
             out << dump_type_block(v, typeIdx);
             ++processed;
             if (progress && (processed % 50 == 0)) {
@@ -638,14 +838,14 @@ bool metadata_dump_run(pid_t pid, uintptr_t il2cppBase, uintptr_t metaRemote, si
             }
         }
     }
-    if (processed == 0 && v.hdr.typeDefinitionsCount > 0) {
-        logf("image walk empty — dumping %d type defs directly", v.hdr.typeDefinitionsCount);
+    if (processed == 0 && v.typeDefinitionsCount > 0) {
+        logf("image walk empty — dumping %d type defs directly", v.typeDefinitionsCount);
         dump_all_types();
     }
     out.close();
 
     if (processed == 0) {
-        logf("ERROR: metadata dump wrote 0 types (v%d)", v.hdr.version);
+        logf("ERROR: metadata dump wrote 0 types (v%d)", v.version);
         return false;
     }
     logf("SUCCESS metadata dump.cs classes=%d path=%s", processed, outPath.c_str());
