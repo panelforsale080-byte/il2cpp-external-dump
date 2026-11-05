@@ -2,6 +2,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <sys/types.h>
+#include <vector>
 
 struct RemoteSession;
 
@@ -42,4 +43,11 @@ bool remote_il2cpp_domain_get_uses_bl(pid_t pid, uintptr_t symDomainGet);
 /** Ptrace call wrapper / BL targets until a valid domain is returned. */
 bool remote_il2cpp_session_call_domain_get(RemoteSession &s, pid_t pid, uintptr_t symDomainGet,
                                            uintptr_t &domainOut);
+void remote_il2cpp_collect_call_targets(pid_t pid, uintptr_t exportAddr,
+                                        std::vector<uintptr_t> &targetsOut);
+bool remote_il2cpp_session_invoke(RemoteSession &s, pid_t pid, uintptr_t exportAddr,
+                                  const std::vector<uintptr_t> &args, uintptr_t &ret_x0);
+uintptr_t remote_il2cpp_normalize_domain(pid_t pid, uintptr_t domain);
+bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &assembliesOut,
+                                       size_t &countOut);
 void remote_il2cpp_invalidate_cache(pid_t pid);

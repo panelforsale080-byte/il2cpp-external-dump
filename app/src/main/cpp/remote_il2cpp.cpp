@@ -4,6 +4,7 @@
 #include "remote_elf.hpp"
 #include "ui_log.hpp"
 #include <algorithm>
+#include <vector>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -299,31 +300,95 @@ bool remote_il2cpp_domain_get_uses_bl(pid_t pid, uintptr_t symDomainGet) {
     return getter_uses_bl(pid, symDomainGet);
 }
 
+void remote_il2cpp_collect_call_targets(pid_t pid, uintptr_t exportAddr,
+                                        std::vector<uintptr_t> &targetsOut) {
+    targetsOut.clear();
+    if (!exportAddr) return;
+    std::vector<uintptr_t> stack;
+    stack.push_back(exportAddr);
+    uint32_t ins[32] = {};
+    while (!stack.empty() && targetsOut.size() < 12) {
+        const uintptr_t fn = stack.back();
+        stack.pop_back();
+        bool dup = false;
+        for (uintptr_t t : targetsOut)
+            if (t == fn) {
+                dup = true;
+                break;
+            }
+        if (dup) continue;
+        targetsOut.push_back(fn);
+        if (!mem_read(pid, fn, ins, sizeof(ins))) continue;
+        for (int i = 0; i < 12; ++i) {
+            const uintptr_t blt = decode_bl_target(ins[i], fn + (uint64_t)i * 4);
+            if (blt) stack.push_back(blt);
+        }
+    }
+    if (getter_uses_bl(pid, exportAddr) && targetsOut.size() > 1) {
+        const uintptr_t exp = exportAddr;
+        targetsOut.erase(std::remove(targetsOut.begin(), targetsOut.end(), exp), targetsOut.end());
+        targetsOut.push_back(exp);
+    }
+}
+
+bool remote_il2cpp_session_invoke(RemoteSession &s, pid_t pid, uintptr_t exportAddr,
+                                  const std::vector<uintptr_t> &args, uintptr_t &ret_x0) {
+    ret_x0 = 0;
+    if (!exportAddr) return false;
+    std::vector<uintptr_t> targets;
+    remote_il2cpp_collect_call_targets(pid, exportAddr, targets);
+    int tried = 0;
+    for (uintptr_t fn : targets) {
+        if (!fn) continue;
+        if (tried++ > 8) break;
+        if (remote_session_call(s, fn, args, ret_x0)) return true;
+    }
+    return false;
+}
+
 bool remote_il2cpp_session_call_domain_get(RemoteSession &s, pid_t pid, uintptr_t symDomainGet,
                                            uintptr_t &domainOut) {
     domainOut = 0;
     if (!symDomainGet) return false;
-    std::vector<uintptr_t> targets;
-    const bool blWrap = getter_uses_bl(pid, symDomainGet);
-    if (!blWrap) targets.push_back(symDomainGet);
-    uint32_t ins[24] = {};
-    if (mem_read(pid, symDomainGet, ins, sizeof(ins))) {
-        for (int i = 0; i < 20; ++i) {
-            const uint64_t pc = symDomainGet + (uint64_t)i * 4;
-            const uintptr_t blt = decode_bl_target(ins[i], pc);
-            if (blt) targets.push_back(blt);
-        }
-    }
-    int tried = 0;
-    for (uintptr_t fn : targets) {
-        if (!fn) continue;
-        if (tried++ > 6) break;
-        uintptr_t d = 0;
-        if (remote_session_call(s, fn, {}, d) && domain_looks_valid(pid, d)) {
-            domainOut = d;
+    uintptr_t d = 0;
+    if (!remote_il2cpp_session_invoke(s, pid, symDomainGet, {}, d)) return false;
+    domainOut = remote_il2cpp_normalize_domain(pid, d);
+    return mem_ptr_ok(domainOut);
+}
+
+uintptr_t remote_il2cpp_normalize_domain(pid_t pid, uintptr_t domain) {
+    if (!mem_ptr_ok(domain)) return 0;
+    if (domain_looks_valid(pid, domain)) return domain;
+    uintptr_t inner = 0;
+    if (mem_read(pid, domain, inner) && domain_looks_valid(pid, inner)) return inner;
+    return domain;
+}
+
+bool remote_il2cpp_read_assemblies_mem(pid_t pid, uintptr_t domain, uintptr_t &assembliesOut,
+                                       size_t &countOut) {
+    assembliesOut = 0;
+    countOut = 0;
+    if (!mem_ptr_ok(domain)) return false;
+
+    auto try_pair = [&](uintptr_t base) -> bool {
+        for (size_t off = 0; off + 16 <= 0x120; off += 8) {
+            uintptr_t arr = 0;
+            size_t n = 0;
+            if (!mem_read(pid, base + off, arr)) continue;
+            if (!mem_read(pid, base + off + 8, &n, sizeof(n))) continue;
+            if (!mem_ptr_ok(arr) || n < 2 || n > 600) continue;
+            uintptr_t asm0 = 0;
+            if (!mem_read(pid, arr, asm0) || !mem_ptr_ok(asm0)) continue;
+            assembliesOut = arr;
+            countOut = n;
             return true;
         }
-    }
+        return false;
+    };
+
+    if (try_pair(domain)) return true;
+    uintptr_t app = 0;
+    if (mem_read(pid, domain, app) && mem_ptr_ok(app) && try_pair(app)) return true;
     return false;
 }
 

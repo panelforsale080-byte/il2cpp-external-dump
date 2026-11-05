@@ -2,6 +2,7 @@
 #include "Il2cpp/il2cpp-tabledefs.h"
 #include "Il2cpp/il2cpp_types_minimal.h"
 #include "mem.hpp"
+#include "remote_il2cpp.hpp"
 
 #include <algorithm>
 #include <cstdarg>
@@ -441,17 +442,15 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         return ctx.domainValid ? ctx.domainValid(d) : true;
     };
 
-    uintptr_t domain = 0;
-    uintptr_t live = 0;
-    const bool liveOk = ctx.call0("il2cpp_domain_get", live);
-    logf("live il2cpp_domain_get -> 0x%llx (%s)", (unsigned long long)live, liveOk ? "ok" : "fail");
-    if (liveOk && domain_ok(live))
-        domain = live;
-    else if (domain_ok(ctx.domainHint))
-        domain = ctx.domainHint;
-    else {
-        logf("ERROR: no valid domain live=0x%llx hint=0x%llx", (unsigned long long)live,
-             (unsigned long long)ctx.domainHint);
+    uintptr_t domain = remote_il2cpp_normalize_domain(ctx.pid, ctx.domainHint);
+    if (!domain_ok(domain)) {
+        uintptr_t live = 0;
+        const bool liveOk = ctx.call0("il2cpp_domain_get", live);
+        logf("live il2cpp_domain_get -> 0x%llx (%s)", (unsigned long long)live, liveOk ? "ok" : "fail");
+        if (liveOk && domain_ok(live)) domain = live;
+    }
+    if (!domain_ok(domain)) {
+        logf("ERROR: no valid domain hint=0x%llx", (unsigned long long)ctx.domainHint);
         return false;
     }
 
@@ -460,19 +459,23 @@ bool dump_cs_run(DumpCtx &ctx, const std::string &outPath, const std::string &ta
         ctx.call1("il2cpp_thread_attach", domain, thr);
         logf("thread_attach domain=0x%llx -> 0x%llx", (unsigned long long)domain,
              (unsigned long long)thr);
-        uintptr_t live2 = 0;
-        if (ctx.call0("il2cpp_domain_get", live2) && domain_ok(live2)) domain = live2;
     }
     logf("domain=0x%llx", (unsigned long long)domain);
 
     uintptr_t sizeSlot = ctx.scratch(8);
     uintptr_t assemblies = 0;
-    if (!ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) || !assemblies) {
-        logf("ERROR: no assemblies (ptr=0x%llx)", (unsigned long long)assemblies);
+    size_t asmCount = 0;
+    const bool apiAsm =
+        ctx.call2("il2cpp_domain_get_assemblies", domain, sizeSlot, assemblies) && assemblies;
+    if (apiAsm) ctx.readMem(sizeSlot, &asmCount, sizeof(asmCount));
+    if (!apiAsm || asmCount == 0) {
+        if (remote_il2cpp_read_assemblies_mem(ctx.pid, domain, assemblies, asmCount) && asmCount > 0)
+            logf("assemblies from memory layout count=%zu", asmCount);
+    }
+    if (!assemblies || asmCount == 0) {
+        logf("ERROR: no assemblies (ptr=0x%llx count=%zu)", (unsigned long long)assemblies, asmCount);
         return false;
     }
-    size_t asmCount = 0;
-    ctx.readMem(sizeSlot, &asmCount, sizeof(asmCount));
     logf("assemblies=%zu", asmCount);
     if (asmCount == 0) {
         logf("ERROR: assembly count 0 — game not ready or domain wrong");

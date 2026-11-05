@@ -86,26 +86,29 @@ uintptr_t RemoteIl2CppExecutor::sym(const char *name) const {
 }
 
 bool RemoteIl2CppExecutor::call0(const char *name, uintptr_t &ret) {
-    if (std::strcmp(name, "il2cpp_domain_get") == 0) {
-        const uintptr_t fn = sym(name);
-        if (!fn) return false;
-        return remote_il2cpp_session_call_domain_get(session_, pid, fn, ret);
-    }
     const uintptr_t fn = sym(name);
     if (!fn) return false;
-    return remote_session_call(session_, fn, {}, ret);
+    if (std::strcmp(name, "il2cpp_domain_get") == 0)
+        return remote_il2cpp_session_call_domain_get(session_, pid, fn, ret);
+    const bool ok = remote_il2cpp_session_invoke(session_, pid, fn, {}, ret);
+    if (!ok) ui_log("[il2cpp] %s: %s", name, session_.err);
+    return ok;
 }
 
 bool RemoteIl2CppExecutor::call1(const char *name, uintptr_t a0, uintptr_t &ret) {
     const uintptr_t fn = sym(name);
     if (!fn) return false;
-    return remote_session_call(session_, fn, {a0}, ret);
+    const bool ok = remote_il2cpp_session_invoke(session_, pid, fn, {a0}, ret);
+    if (!ok) ui_log("[il2cpp] %s: %s", name, session_.err);
+    return ok;
 }
 
 bool RemoteIl2CppExecutor::call2(const char *name, uintptr_t a0, uintptr_t a1, uintptr_t &ret) {
     const uintptr_t fn = sym(name);
     if (!fn) return false;
-    return remote_session_call(session_, fn, {a0, a1}, ret);
+    const bool ok = remote_il2cpp_session_invoke(session_, pid, fn, {a0, a1}, ret);
+    if (!ok) ui_log("[il2cpp] %s: %s", name, session_.err);
+    return ok;
 }
 
 bool RemoteIl2CppExecutor::call2_out(const char *name, uintptr_t a0, uintptr_t outRemote,
@@ -151,6 +154,7 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
     }
     if (!info.domain_ptr || !remote_il2cpp_domain_valid(pid, info.domain_ptr))
         remote_refresh_domain_ptr(pid, info);
+    info.domain_ptr = remote_il2cpp_normalize_domain(pid, info.domain_ptr);
     ui_log("[dump] domain* hint=0x%llx", (unsigned long long)info.domain_ptr);
 
     if (!remote_session_begin(pid, session_)) {
@@ -167,12 +171,24 @@ bool RemoteIl2CppExecutor::open(pid_t target, char *err, size_t errCap) {
 
     auto probe_assemblies = [&](uintptr_t domain) -> bool {
         if (!mem_ptr_ok(domain)) return false;
+        if (info.sym_thread_attach) {
+            uintptr_t thr = 0;
+            remote_il2cpp_session_invoke(session_, pid, sym("il2cpp_thread_attach"), {domain}, thr);
+            ui_log("[dump] thread_attach -> 0x%llx", (unsigned long long)thr);
+        }
         uintptr_t slot = scratch(8);
         uintptr_t arr = 0;
-        if (!call2("il2cpp_domain_get_assemblies", domain, slot, arr) || !arr) return false;
-        size_t n = 0;
-        mem_read(pid, slot, &n, sizeof(n));
-        return n > 0;
+        if (call2("il2cpp_domain_get_assemblies", domain, slot, arr) && arr) {
+            size_t n = 0;
+            mem_read(pid, slot, &n, sizeof(n));
+            if (n > 0) return true;
+        }
+        size_t nMem = 0;
+        if (remote_il2cpp_read_assemblies_mem(pid, domain, arr, nMem) && nMem > 0) {
+            ui_log("[dump] assemblies via memory scan count=%zu", nMem);
+            return true;
+        }
+        return false;
     };
 
     if (info.domain_ptr && probe_assemblies(info.domain_ptr)) {

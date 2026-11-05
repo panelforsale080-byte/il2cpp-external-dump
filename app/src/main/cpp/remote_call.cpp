@@ -9,8 +9,11 @@
 #include <sys/ptrace.h>
 #include <sys/uio.h>
 #include <sys/wait.h>
+#include <dirent.h>
 #include <unistd.h>
 #include <time.h>
+#include <cstdlib>
+#include <cstring>
 
 #if defined(__aarch64__)
 
@@ -23,7 +26,34 @@
 
 static std::mutex g_ptraceSessionMu;
 
-static pid_t pick_tracee_tid(pid_t pid) { return pid; }
+static pid_t pick_tracee_tid(pid_t pid) {
+    char path[64];
+    std::snprintf(path, sizeof(path), "/proc/%d/task", (int)pid);
+    DIR *dir = opendir(path);
+    if (!dir) return pid;
+    pid_t pick = pid;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        if (ent->d_name[0] < '0' || ent->d_name[0] > '9') continue;
+        const pid_t tid = (pid_t)std::strtol(ent->d_name, nullptr, 10);
+        char commPath[80];
+        std::snprintf(commPath, sizeof(commPath), "/proc/%d/task/%d/comm", (int)pid, (int)tid);
+        FILE *f = std::fopen(commPath, "r");
+        if (!f) continue;
+        char comm[64] = {};
+        if (std::fgets(comm, sizeof(comm), f)) {
+            if (std::strstr(comm, "UnityMain") || std::strstr(comm, "Main") ||
+                std::strstr(comm, "il2cpp")) {
+                pick = tid;
+                std::fclose(f);
+                break;
+            }
+        }
+        std::fclose(f);
+    }
+    closedir(dir);
+    return pick;
+}
 
 static struct user_pt_regs *saved_pt(RemoteSession &s) {
     return reinterpret_cast<struct user_pt_regs *>(s.savedRegs);
@@ -186,7 +216,7 @@ bool remote_session_call(RemoteSession &s, uintptr_t func, const std::vector<uin
     ptrace(PTRACE_CONT, s.tid, nullptr, nullptr);
     int st = 0;
     bool gotTrap = false;
-    const int64_t callDeadline = now_ms_monotonic() + 2500;
+    const int64_t callDeadline = now_ms_monotonic() + 4500;
     for (int tries = 0; tries < 64; ++tries) {
         if (now_ms_monotonic() >= callDeadline) break;
         const int sliceMs = (int)std::min<int64_t>(200, callDeadline - now_ms_monotonic());
